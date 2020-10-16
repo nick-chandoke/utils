@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+# requires pip install python-musicpd
+
+# vimpc / libmpdclient version. see <https://kaliko.gitlab.io/python-musicpd/commands.html>
+# ideally i'd be able to select songs in vimpc and press a key to run a script on the selected items, namely: moving songs to ~/.deleted-music then going to the next song if available
+
+import musicpd
+import os
+import os.path
+
+graveyard = os.path.normpath(os.getenv("HOME") + "/.deleted-music")
+
+def main():
+    client = musicpd.MPDClient()
+    try:
+        client.connect()
+        cur_song = client.currentsong()
+        if cur_song:
+            cur_song_uri = cur_song["file"]
+            relgrave = os.path.basename(cur_song_uri)
+            grave = os.path.normpath(graveyard + "/" + relgrave)
+            if os.path.exists(grave):
+                os.system("zenity --error --text='not deleting " + relgrave + " . a file with that name already exists in " + graveyard + "'")
+            else:
+                os.rename(os.path.normpath(client.config()["music_directory"] + "/" + cur_song_uri), grave)
+                client.update(cur_song_uri) # this is how we effectively delete a song from the mpd db. or is it? it only deletes it from the playlist, not the db! actually, though, it worked for filepaths like "rebirth3_bgm/BGM/045.flac"
+                client.next()
+        client.disconnect()
+    except ConnectionRefusedError as e:
+        os.system("zenity --error --text='could not connect to mpd'")
+
+if __name__ == '__main__': main()
+
+# bash/cmus version. DOES NOT ACCOUNT FOR REPLACING AN ALREDAY EXISTANT FILE! FIX THIS IF YOU USE IT LATER.
+# x="$(cmus-remote -Q | command grep '^file')"
+# if [[ $? -eq 0 && -n "$x" ]]; then cmus-remote -u; mv -t ~/.deleted-music/ "${x:5}" else zenity --error --text="song delete failed!" fi

@@ -1,0 +1,5 @@
+#!/usr/bin/env -S sed -f
+/^!/d
+/^$/d
+/cursorColor/d
+s/\*\.\([[:alnum:]]\+\):/\1/

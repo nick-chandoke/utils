@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+declare -Ar colors=([black]=0 [red]=1 [green]=2 [brown]=3 [blue]=4 [purple]=5 [cyan]=6 [light_gray]=7)
+for i in "${!colors[@]}"; do echo -ne "\033[1;3${colors[$i]}m▆▆"; done
+echo

@@ -1,0 +1,75 @@
+#!/usr/bin/env racket
+#lang rackjure
+(require racket/port racket/system racket/string)
+
+;;; USER-DEFINED CONFIGS
+;; each is a (Pairof (HashTable Symbol (HashTable 'rot (U 'normal 'left 'right))) (-> (HashTable _ _) Boolean))
+
+(define (dual-head m)
+  (and
+   ;; nested map access. equivalent to JS m.HDMI-1.connected?. connected? is a boolean
+   (~> m 'HDMI-1 'connected?)
+   (~> m 'HDMI-2 'connected?)))
+
+;; note: this is (implicitly, by rackjure's default (current-curly-dict)) an alist, which is necessary to retain the order that the k/v pairs are specified!
+;; for example, hash tables make no guarantees about the order in which their keys are traversed!
+(define configs
+  {"eDP-in-middle" (cons
+                    {'HDMI-1 {}
+                     'eDP-1  {}
+                     'HDMI-2 {}}
+                    (const #f))
+   "t" (cons {'eDP-1 {} 'HDMI-1 {} 'HDMI-2 {'rot 'left}} (const #f))
+   "hv" (cons
+                 {'HDMI-1 {}
+                  'HDMI-2 {'rot 'left}}
+                 dual-head)
+   "hh" (cons
+         {'HDMI-1 {}
+           'HDMI-2 {}}
+         dual-head)
+   "vv" (cons
+         {'HDMI-1 {'rot 'left}
+                  'HDMI-2 {'rot 'left}}
+                 dual-head)
+   "vh" (cons
+                 {'HDMI-1 {'rot 'left}
+                  'HDMI-2 {}}
+                 dual-head)})
+
+;;; MAIN FUNCTIONALITY
+
+(let ([args (current-command-line-arguments)])
+  (cond [(= 0 (vector-length args)) (displayln (string-append "available layouts: " (string-join (dict-keys configs) ", "))) (exit)]
+        [(= 1 (vector-length args))
+         (let* ([desired-config (vector-ref args 0)]
+                [config (or (configs desired-config)
+                            (raise-user-error (format "~a isn't available. here's what is:~n~a" desired-config (string-join (dict-keys configs) ", "))))]
+                [display-map (car config)]
+                [display-map (dict-merge display-map
+                                         (foldl ;; map of connected displays as scraped from xrandr(1)
+                                          (λ (s d)
+                                            (let* ([words (string-split s " ")]
+                                                   [display-name (string->symbol (first words))])
+                                              (d display-name {'connected? (string=? "connected" (last words))})))
+                                          null
+                                          (string-split
+                                           (with-output-to-string (λ () (system "xrandr -q | awk '/connected/ {print($1,$2);}'")))
+                                           "\n")))]
+                [disable-laptop? ((cdr config) display-map)]
+                [acc-str "xrandr"] ;; the resultant command line. gets updated for each loop of dict-for-each below
+                [prior #f]) ;; the last iterated connected output
+           (dict-for-each display-map
+                          (λ (k v)
+                            (let* ([ks (symbol->string k)]
+                                   ;; don't use an output if it isn't connected, or it's a laptop and we've decided to not use the laptop screen
+                                   [use-output? (and (v 'connected?)
+                                                     (not (and (string-contains? ks "DP")
+                                                               disable-laptop?)))])
+                              (set! acc-str (str acc-str " --output " ks
+                                                 (if use-output?
+                                                     (str " --auto" (if prior (str " --right-of " prior) "") " --rotate " (symbol->string (or (v 'rot) 'normal)))
+                                                     " --off")))
+                              (when use-output? (set! prior k)))) )
+           (system acc-str))]
+        [else (raise-user-error "error: you must specify exactly one layout name")]))

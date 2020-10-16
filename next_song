@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+import musicpd
+
+def main():
+    client = musicpd.MPDClient()
+    try:
+        client.connect()
+        client.next()
+        client.disconnect()
+    except ConnectionRefusedError as e:
+        os.system("zenity --error --text='could not connect to mpd'")
+
+if __name__ == '__main__': main()

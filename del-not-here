@@ -1,0 +1,64 @@
+#!/usr/bin/env python
+# deletes files in dest that aren't in src; use `del-not-here src dest` before or after doing `cp -ru src dest`; they're commutative
+
+# TODO: check whether user is root; this may be important for copying to separate (mounted) partitions/drives
+
+import os
+import shutil
+import sys
+
+def noEndWithSlash(x): return x[:-1] if x[-1] == '/' else x
+
+dryrun = False
+
+if len(sys.argv) == 3:
+    src = sys.argv[1]
+    dest = sys.argv[2]
+elif len(sys.argv) == 4 and sys.argv[1] == "--dry-run":
+    dryrun = True
+    src = sys.argv[2]
+    dest = sys.argv[3]
+else: exit("usage: del-not-here [--dry-run] <here> <there> where here & there are directories whose contents should be sync'd")
+
+src = noEndWithSlash(src)
+dest = noEndWithSlash(dest)
+
+if not os.path.exists(src): exit(src + " does not exist")
+if not os.path.exists(dest): exit(dest + " does not exist")
+
+def del_on_not_here(rel_obj_path):
+    src_obj_path  = src  + '/' + rel_obj_path
+    dest_obj_path = dest + '/' + rel_obj_path
+    if not os.path.lexists(dest_obj_path): # sanity checek
+        exit("logic error: " + dest_obj_path + " does not exist!")
+    if not os.path.exists(src_obj_path):
+        if os.path.islink(dest_obj_path): # isfile and isdir follow links, so we must test islink first
+            if dryrun:
+                print("unlink", dest_obj_path)
+            else:
+                os.unlink(dest_obj_path) # we unlink regardless of whether broken or not
+        elif os.path.isdir(dest_obj_path):
+            if dryrun:
+                print("rmdir", dest_obj_path)
+            else:
+                shutil.rmtree(dest_obj_path, ignore_errors=False, onerror=lambda f, p, e: print('Error deleting', p + ':', e))
+            return True # signal to delete the directory from os.walk
+        elif os.path.isfile(dest_obj_path):
+            if dryrun:
+                print("rm", dest_obj_path)
+            else:
+                os.remove(dest_obj_path)
+        else:
+            print("unknown file type for", dest_obj_path, file=sys.stderr)
+    else:
+        return False
+
+# FEATURE REQUEST: sticky output at bottom of terminal: "in directory " + str(cwd)
+# furthermore, there should be a device for dryrun/verbose/normal, since dryrun describes (and is thus metadata) of normal, and verbose is the product of both dryrun and normal.
+for cwd, dirs, files in os.walk(dest):
+    cwdp = noEndWithSlash(cwd)[len(dest) + 1:] or '.' # +1 to omit the slash in $dest/$cwd, if any (there may not be one)
+    for f in files:
+        del_on_not_here(cwdp + '/' + f)
+    for d in dirs:
+        if del_on_not_here(cwdp + '/' + d):
+            dirs.remove(d) # prune d from the walk

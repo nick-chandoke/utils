@@ -1,0 +1,66 @@
+#!/usr/bin/env racket
+#lang racket/base
+(require (only-in racket/port port->lines)
+         (only-in racket/list append-map filter-not)
+         (only-in racket/string string-suffix? string-split string-prefix? string-join)
+         (only-in racket/cmdline command-line))
+
+;; mkdir -p.
+(define (make-directory-rec p)
+  (let* ([separator "/"] ;; TODO: get this through automated means
+         [p (if (string? p) p (path->string p))]
+         [segments (string-split p "/")]
+         [absolute? (string-prefix? p separator)])
+    (let ([final-dir (foldl
+                      (λ (segment path-string)
+                        (let ([ps (string->path path-string)])
+                          (unless (directory-exists? ps) (make-directory ps))
+                          (string-append path-string separator segment)))
+                      (if absolute? (string-append separator (car segments)) (car segments))
+                      (cdr segments))])
+      (unless (directory-exists? final-dir)
+        (make-directory final-dir)))))
+
+(define (dirname p) ;; hacky. don't care rn.
+  (let ([pp (string-join (reverse (cdr (reverse (string-split p "/")))) "/")])
+    (if (string-prefix? p "/") (string-append "/" pp) pp)))
+
+(define (ensure-end-/ s) (if (string-suffix? s "/") s (string-append s "/")))
+(module+ main
+  (define home-dir (path->string (find-system-path 'home-dir)))
+  (define lib-dir (string-append home-dir "music/"))
+  (define pl-dir (string-append home-dir ".playlists/"))
+
+  (define-values (mountpoint playlists) ;; playlists is a list of playlist names, not paths
+    (command-line
+     #:usage-help "copy playlists to an external disk"
+     #:once-each
+     [("-m" "--library-directory") md "music directory" (set! lib-dir (ensure-end-/ md))]
+     [("-p" "--playlist-directory") pd "playlist directory" (set! pl-dir (ensure-end-/ pd))]
+     #:args (mountpoint . playlists)
+     (values (ensure-end-/ mountpoint) playlists)))
+
+  (define (playlist->path playlist) (string-append pl-dir playlist ".m3u"))
+  (define missing-playlists (filter-not (compose1 file-exists? playlist->path) playlists))
+
+  (unless (null? missing-playlists)
+    (raise-user-error (format "the following playlists were not found in ~a: ~a~n" pl-dir missing-playlists)))
+
+  (define rel-song-paths (append-map (λ (playlist) (with-input-from-file (playlist->path playlist) port->lines)) playlists))
+  (define sl (length rel-song-paths))
+  (define i 0)
+
+  (for ([song-path rel-song-paths])
+    (set! i (add1 i))
+    (printf "\rcopying song ~a of ~a (~a%)..." i sl (real->decimal-string (* 100 (/ i sl)) 2))
+    (let* ([dest-path (string-append mountpoint song-path)]
+           [d (dirname dest-path)]
+           [src-path (string-append lib-dir song-path)])
+      (if (file-exists? src-path)
+          (unless (file-exists? dest-path) ;; skip redundant copy to save time
+            (make-directory-rec d)
+            (copy-file src-path
+                       dest-path))
+          (printf "~n~a is in playlist but no such file exists. skipping.~n" src-path))))
+
+  (displayln "done!"))
