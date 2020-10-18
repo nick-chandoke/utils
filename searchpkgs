@@ -1,0 +1,169 @@
+#!/usr/bin/env racket
+#lang typed/racket/base
+
+;;; package manager abstraction layer. currently works only for nix.
+
+;; TODO: like any search program, it should cluster search results' terms, so that user can see overview of
+;; results' span, and refine their search.
+
+(provide (all-defined-out))
+(require "json-extra.rkt"
+         srfi/2
+         (only-in racket/list make-list append*)
+         (only-in racket/string string-split string-join)
+         (only-in racket/cmdline parse-command-line) ;; fortunately its type instantiation is irrelevant here
+         (only-in racket/system process*) ;; read from nix-env -qaP
+         (only-in racket/match match) ;; used against process*/ports' returned ports
+         (only-in typed/db query query-rows disconnect SQL-Datum)
+         (only-in typed/db/sqlite3 sqlite3-available? sqlite3-connect)
+         (only-in typed/json JSExpr read-json))
+
+(: split-string-at-every/word-boundary (-> Natural String (Listof String)))
+(define (split-string-at-every/word-boundary l s)
+  (let* ([ws (string-split s)]
+         [cur-line-str : String (car ws)]
+         [acc : (Listof String) null])
+    (for ([w (cdr ws)])
+      (if (>= (+ (string-length w) (string-length cur-line-str)) l)
+          (begin (set! acc (cons cur-line-str acc))
+                 (set! cur-line-str w))
+          (set! cur-line-str (string-append cur-line-str " " w))))
+    (reverse (cons cur-line-str acc))))
+
+;; if we want to display any more, just export to html, and let browser lay it out as a <table>
+;; then again, this function generalizes to columns & lists
+(: pretty-print (-> (Listof (Vectorof String)) Void))
+(define (pretty-print vs)
+  (let* ([x (foldr (λ ([v : (Vectorof String)] [acc : (Pairof (Listof (Immutable-Vector String Nonnegative-Fixnum String Nonnegative-Fixnum String)) Nonnegative-Fixnum)])
+                      (let* ([name-ver (format "~a ~a" (vector-ref v 0) (vector-ref v 2))]
+                             [name-ver-len : Nonnegative-Fixnum (string-length name-ver)]
+                             [homepage (vector-ref v 3)]
+                             [homepage-len : Nonnegative-Fixnum (string-length homepage)])
+                        (cons (cons (vector-immutable name-ver name-ver-len homepage homepage-len (vector-ref v 1))
+                                    (car acc))
+                              (ann (max name-ver-len homepage-len (cdr acc)) Nonnegative-Fixnum))))
+                   (cons (ann null (Listof (Immutable-Vector String Nonnegative-Fixnum String Nonnegative-Fixnum String))) (ann 0 Nonnegative-Fixnum))
+                   vs)]
+         [vs (car x)]
+         [col1-len (cdr x)])
+    (for-each
+     (λ ([v : (Immutable-Vector String Nonnegative-Fixnum String Nonnegative-Fixnum String)])
+       (let* ([name-ver (vector-ref v 0)]
+              [name-ver-len (vector-ref v 1)]
+              [homepage (vector-ref v 2)]
+              [homepage-len (vector-ref v 3)]
+              [desc-raw (vector-ref v 4)]
+              [padded-name-ver (string-append name-ver (make-string (- col1-len name-ver-len) #\space))]
+              [padded-homepage (string-append homepage (make-string (- col1-len homepage-len) #\space))]
+              [desc/wb (let* ([x0 (split-string-at-every/word-boundary 60 (if (string=? "" desc-raw) "<no description>" desc-raw))]
+                              [x0l (length x0)])
+                         (if (< x0l 2)
+                             (append x0 (make-list (- 2 x0l) ""))
+                             x0))]
+              [desc/wb-len (length desc/wb)]
+              [padded-name-ver-homepage-list (if (> desc/wb-len 2)
+                                                 (cons padded-name-ver (cons padded-homepage (make-list (- desc/wb-len 2) (make-string col1-len #\space))))
+                                                 (list padded-name-ver padded-homepage))])
+         (for-each
+          (λ ([x : String] [y : String])
+            (printf "~a │ ~a~n" x y))
+          padded-name-ver-homepage-list desc/wb)
+         (printf "~a~a~a~n" (make-string (+ 1 col1-len) #\─) "┼" (make-string 62 #\─))))
+     vs)))
+
+(module+ main
+  (unless (sqlite3-available?) (exit "sqlite3 library not found. you need to install it first."))
+
+  ;; cmdline opts
+  (define name     : (Option String) #f)
+  (define desc     : (Option String) #f)
+  (define update?  : Boolean #f)
+  (define exact?   : Boolean #f)
+  (define either   : (Option String) #f)
+  (define pkgset   : (Option String) #f)
+
+  ;; general globals
+  (define homedir  : String (path->string (find-system-path 'home-dir)))
+  (define dbloc    : String (string-append homedir ".nixpkgs.db"))
+
+  ;; flag
+  (define b/c-no-file? : Boolean #f)
+
+  (or (and-let*
+       ([nix-env-path (find-executable-path "nix-env")])
+
+       ((inst parse-command-line Void)
+        (find-system-path 'run-file)
+        (current-command-line-arguments)
+        `((once-each
+           (("-n" "--name")
+            ,(λ (_ n) (set! name (assert n string?)))
+            (("search package name by sql regex") . ("n")))
+           (("-d" "--description")
+            ,(λ (_ d) (set! desc (assert d string?)))
+            (("search package description by sql regex") . ("d")))
+           (("-A" "--pkgset")
+            ,(λ (_ p) (set! pkgset (assert p string?)))
+            (("consider only one package set e.g. nixos, nixpkgs, or koi, instead of considering all in nix-channel(1)") . ("p")))
+           (("-u" "--update")
+            ,(λ (_) (set! update? #t))
+            (("update pkg database (using pkgupdate) before searching (or update & exit if neither -n nor -d specified)") . ()))
+           (("-e" "--exact")
+            ,(λ (_) (set! exact? #t))
+            (("search terms exactly, instead of searching for names or values that contain the given term") . ()))))
+        ;; these args are (Listof Any) String ..., though we're using x . rst syntax.
+        ;; somehow (length keywords) gives 0, though (car keywords) returns its 1st elem.
+        (λ (_ . keywords)
+          (let ([s (string-join (cast keywords (Listof String)) " ")])
+            (unless (string=? "" s) (set! either s))))
+        '("keywords"))
+
+       (unless (file-exists? dbloc)
+         (set! update? #t)
+         (set! b/c-no-file? #t))
+
+       (when (and update? (file-exists? dbloc)) (delete-file dbloc))
+
+       (let ([dbconn (sqlite3-connect #:database dbloc #:mode (if update? 'create 'read-only))])
+         (when update?
+           (define last-str-len 0)
+           (displayln (if b/c-no-file? (format "file ~a not found. building db." dbloc) "building db anew because -u/--update was specified."))
+           (query dbconn "create table nixpkgs(name, description, version, homepage, primary key (name asc))")
+           (match (if pkgset
+                      (process* nix-env-path "-qa" "--json" "-A" (assert pkgset string?)) ;; no idea why no refinement here
+                      (process* nix-env-path "-qa" "--json"))
+             [(list source sink _pid err _ask)
+              (for ([(_ v) (in-jshash source)])
+                (let-values ([(name desc ver home) ;; yes, i'm aware that name & desc shadow
+                              (mhash-ref v
+                                         ['pname : String]
+                                         ['meta 'description : String #f]
+                                         ['version : String ""]
+                                         ['meta 'homepage : (U String (Listof String)) ""])])
+                  (when desc ;; some packages (like nixos.all-cabal-hashes) are not ordinary packages, and should be disqualified
+                    (let* ([os (format "adding ~a" name)]
+                           [cur-str-len (string-length os)]
+                           [sd (- last-str-len cur-str-len)])
+                      (if (positive? sd)
+                          (printf "\r~a~a" os (make-string sd #\space))
+                          (printf "\r~a" os))
+                      (set! last-str-len (string-length os))
+                      (query dbconn "insert or replace into nixpkgs values ($1, $2, $3, $4)" name desc ver (if (list? home) (car home) home))))))
+              (close-input-port source)
+              (close-output-port sink)
+              (close-input-port err)]))
+
+         (let* ([% (λ ([s : String]) (if exact? s (format "%~a%" s)))]
+                [result-set
+                 : (Listof (Vectorof SQL-Datum))
+                 ;; again, why no refinement?
+                 (cond [either (query-rows dbconn "select * from nixpkgs where name like $1 or description like $1" (% (assert either string?)))]
+                       [(and name desc) (query-rows dbconn "select * from nixpkgs where name like $1 and description like $2" (% (assert name string?)) (% (assert desc string?)))]
+                       [name (query-rows dbconn "select * from nixpkgs where name like $1" (% (assert name string?)))]
+                       [desc (query-rows dbconn "select * from nixpkgs where name like $1" (% (assert desc string?)))]
+                       [else null])])
+           (unless (null? result-set)
+             (pretty-print (cast result-set (Listof (Vectorof String))))))
+
+         (disconnect dbconn)))
+      (error "program `nix-env` not found")))
