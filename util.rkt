@@ -13,9 +13,14 @@
          (only-in racket/string string-split string-suffix? string-replace non-empty-string? string-prefix?)
          (only-in racket/system process)
          (only-in racket/vector vector-split-at vector-append)
+         srfi/2
+         ;; typed/racket/unsafe
          syntax/parse/define)
 
 (require/typed srfi/13 (string-fold (All (a) (-> (-> Char a a) a String a))))
+
+;; currently unused. see replace-matching-lines-in-file.
+;; (unsafe-require/typed racket/base (copy-file (-> Path-String Path-String Boolean Void))) ;; typed version does not have "overwrite ok?" boolean
 
 ;;; types
 
@@ -172,7 +177,7 @@
                   (ring-buffer->vector left))))
      (λ ([_ : (Vectorof a)]) done?))))
 
-;;; string transforms & formatting
+;;; string transforms, formatting, and searching
 
 ;; split an input stream into lines each of which is no more than a given length
 (: split-at-every (-> Natural Input-Port (Listof String)))
@@ -242,6 +247,52 @@
   (if (string-suffix? s ".0")
       (substring s 0 (- (string-length s) 2))
       s))
+
+;; breaks s by lines, then returns list of lines that match the given regex
+;; TODO: make return list of exprs from regex parens
+(: grep (->* ((U String Regexp)) ((U Input-Port String) #:first-only? Boolean) (Listof String)))
+(define (grep regex [s (current-input-port)] #:first-only? [first-only? #f])
+  (let ([in (if (string? s) (open-input-string s) s)])
+    (let loop ()
+      (let ([l (read-line in)])
+        (cond [(eof-object? l) null]
+              [(regexp-match? regex l) (if first-only? (list l) (cons l (loop)))]
+              [else (loop)])))))
+
+(: grep-process (-> (U String Regexp) String [#:first-only? Boolean] (Listof String)))
+(define (grep-process regex process-str #:first-only? [fo? #f])
+  (let* ([ps (process process-str)]
+         [inp (car ps)]
+         ;; unused ports, but bound b/c we need to close them:
+         [outp (cadr ps)]
+         [errp (cadddr ps)])
+    (begin0 (grep regex inp #:first-only? fo?)
+      (close-input-port inp)
+      (close-input-port errp)
+      (close-output-port outp))))
+
+;; function seems to work, though racket says that it can't find either the tempfile (source) or original file (dest).
+;; astonishingly, just like cp(1), it doesn't tell which of the two it can't find. such stupidity should be illegal.
+(: replace-matching-lines-in-file (-> (-> String Boolean) (-> String (Option String)) Path-String [#:first-only? Boolean] Void))
+(define (replace-matching-lines-in-file pred endo path #:first-only? [fo? #f])
+  ((inst with-input-from-file Void)
+   path
+   (λ () (let ([tmpfp (make-temporary-file "rkttmp~a" #f (current-directory))]) ;; can't create in /var/tmp in nixos, i suppose.
+           ((inst with-output-to-file Void)
+            tmpfp
+            (λ ()
+              (let → : Void ()
+                (let ([l (read-line)])
+                  (cond [(eof-object? l) (void)]
+                        [(pred l) (or (and-let* ([lp (endo l)])
+                                                (displayln lp))
+                                      (void))
+                                  (if fo? (copy-port (current-input-port) (current-output-port)) (→))]
+                        [else (displayln l) (→)])
+                  (rename-file-or-directory tmpfp path #t) ;; has sometime failed: "system error: Invalid cross-device link; errno=18", despite mv(1) working
+                  ;; alternative if it doesn't work: (copy-file tmpfp path #t) (delete-file tmpfp)
+                  )))
+            #:exists 'truncate #:mode 'text)))))
 
 ;;; lists
 
