@@ -30,46 +30,53 @@
           (set! cur-line-str (string-append cur-line-str " " w))))
     (reverse (cons cur-line-str acc))))
 
+(define-syntax-rule (pad s l) (string-append s (make-string l #\space)))
+
+(define col2-max-len : Natural 60)
+
 ;; if we want to display any more, just export to html, and let browser lay it out as a <table>
 ;; then again, this function generalizes to columns & lists
 (: pretty-print (-> (Listof (Vectorof String)) Void))
 (define (pretty-print vs)
-  (let* ([x (foldr (λ ([v : (Vectorof String)] [acc : (Pairof (Listof (Immutable-Vector String Nonnegative-Fixnum String Nonnegative-Fixnum String)) Nonnegative-Fixnum)])
+  (let* ([x (foldr (λ ([v : (Vectorof String)] [acc : (Pairof (Listof (Immutable-Vector String Nonnegative-Fixnum String Nonnegative-Fixnum String)) (Pairof Nonnegative-Fixnum Natural))])
                       (let* ([name-ver (format "~a ~a" (vector-ref v 0) (vector-ref v 2))]
                              [name-ver-len : Nonnegative-Fixnum (string-length name-ver)]
                              [homepage (vector-ref v 3)]
                              [homepage-len : Nonnegative-Fixnum (string-length homepage)])
                         (cons (cons (vector-immutable name-ver name-ver-len homepage homepage-len (vector-ref v 1))
                                     (car acc))
-                              (ann (max name-ver-len homepage-len (cdr acc)) Nonnegative-Fixnum))))
-                   (cons (ann null (Listof (Immutable-Vector String Nonnegative-Fixnum String Nonnegative-Fixnum String))) (ann 0 Nonnegative-Fixnum))
+                              (cons (ann (max name-ver-len homepage-len (cadr acc)) Nonnegative-Fixnum)
+                                    (add1 (cddr acc))))))
+                   (cons (ann null (Listof (Immutable-Vector String Nonnegative-Fixnum String Nonnegative-Fixnum String))) (cons (ann 0 Nonnegative-Fixnum) 0))
                    vs)]
          [vs (car x)]
-         [col1-len (cdr x)])
-    (for-each
-     (λ ([v : (Immutable-Vector String Nonnegative-Fixnum String Nonnegative-Fixnum String)])
-       (let* ([name-ver (vector-ref v 0)]
+         [col1-len (cadr x)]
+         [final-index (- (cddr x) 1)])
+    (unless (null? vs)
+      (printf "┌~a~a~a┐~n" (make-string (+ 1 col1-len) #\─) "┬" (make-string 62 #\─)))
+    (for ([v vs] [i (in-naturals)]) ; v : (Immutable-Vector String Nonnegative-Fixnum String Nonnegative-Fixnum String)
+      (let* ([name-ver (vector-ref v 0)]
               [name-ver-len (vector-ref v 1)]
               [homepage (vector-ref v 2)]
               [homepage-len (vector-ref v 3)]
               [desc-raw (vector-ref v 4)]
-              [padded-name-ver (string-append name-ver (make-string (- col1-len name-ver-len) #\space))]
-              [padded-homepage (string-append homepage (make-string (- col1-len homepage-len) #\space))]
-              [desc/wb (let* ([x0 (split-string-at-every/word-boundary 60 (if (string=? "" desc-raw) "<no description>" desc-raw))]
-                              [x0l (length x0)])
-                         (if (< x0l 2)
-                             (append x0 (make-list (- 2 x0l) ""))
+              [padded-name-ver (pad name-ver (- col1-len name-ver-len))]
+              [padded-homepage (pad homepage (- col1-len homepage-len))]
+              [desc/wb (let* ([x0 (split-string-at-every/word-boundary col2-max-len (if (string=? "" desc-raw) "<no description>" desc-raw))]
+                              [num-lines (length x0)])
+                         ;; ensure that x0 is at least 2 lines, to accomodate the name+ver and homepage
+                         (if (< num-lines 2)
+                             (append x0 (make-list (- 2 num-lines) ""))
                              x0))]
-              [desc/wb-len (length desc/wb)]
+              [desc/wb-len (length desc/wb)] ;; number of rows in description
               [padded-name-ver-homepage-list (if (> desc/wb-len 2)
                                                  (cons padded-name-ver (cons padded-homepage (make-list (- desc/wb-len 2) (make-string col1-len #\space))))
                                                  (list padded-name-ver padded-homepage))])
-         (for-each
-          (λ ([x : String] [y : String])
-            (printf "~a │ ~a~n" x y))
-          padded-name-ver-homepage-list desc/wb)
-         (printf "~a~a~a~n" (make-string (+ 1 col1-len) #\─) "┼" (make-string 62 #\─))))
-     vs)))
+         (for ([x padded-name-ver-homepage-list] [y desc/wb])
+           (printf "│~a │ ~a│~n" x (pad y (- (+ 1 col2-max-len) (string-length y)))))
+         (if (< i final-index)
+             (printf "├~a~a~a┤~n" (make-string (+ 1 col1-len) #\─) "┼" (make-string (+ col2-max-len 2) #\─))
+             (printf "└~a~a~a┘~n" (make-string (+ 1 col1-len) #\─) "┴" (make-string (+ col2-max-len 2) #\─)))))))
 
 (module+ main
   (unless (sqlite3-available?) (exit "sqlite3 library not found. you need to install it first."))
