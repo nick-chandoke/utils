@@ -114,12 +114,12 @@
             (("consider only one package set e.g. nixos, nixpkgs, or koi, instead of considering all in nix-channel(1)") . ("p")))
            (("-u" "--update")
             ,(λ (_) (set! update? #t))
-            (("update pkg database (using pkgupdate) before searching (or update & exit if neither -n nor -d specified)") . ()))
+            (("update pkg database (using pkgupdate) before searching (or update & exit if neither -n nor -d specified). if you enter a package selector (see nix-env(1)§Selectors) without a description (i.e. use only the -n flag), then only packages whose names match the selector are updated.") . ()))
            (("-e" "--exact")
             ,(λ (_) (set! exact? #t))
             (("search terms exactly, instead of searching for names or values that contain the given term") . ()))))
         ;; these args are (Listof Any) String ..., though we're using x . rst syntax.
-        ;; somehow (length keywords) gives 0, though (car keywords) returns its 1st elem.
+        ;; somehow (length keywords) gives 0, though (car keywords) returns its 1st elem (assuming that it has one, of course.)
         (λ (_ . keywords)
           (let ([s (string-join (cast keywords (Listof String)) " ")])
             (unless (string=? "" s) (set! either s))))
@@ -133,32 +133,40 @@
 
        (let ([dbconn (sqlite3-connect #:database dbloc #:mode (if update? 'create 'read-only))])
          (when update?
-           (define last-str-len 0)
-           (displayln (if b/c-no-file? (format "file ~a not found. building db." dbloc) "building db anew because -u/--update was specified."))
+           (when b/c-no-file? (printf "file ~a not found. building db...~n" dbloc))
            (query dbconn "create table nixpkgs(name, description, version, homepage, primary key (name asc))")
-           (match (if pkgset
-                      (process* nix-env-path "-qa" "--json" "-A" (assert pkgset string?)) ;; no idea why no refinement here
-                      (process* nix-env-path "-qa" "--json"))
+           (match
+               (apply process* nix-env-path "-qa" "--json"
+                      ;; no idea why no automatic refinement for name nor pkgset here
+                      (append
+                       (if name (list (assert name string?)) null) ;; name is used as a selector here
+                       (if pkgset (list "-A" (assert pkgset string?)) null)))
              [(list source sink _pid err _ask)
-              (for ([(_ v) (in-jshash source)])
-                (let-values ([(name desc ver home) ;; yes, i'm aware that name & desc shadow
-                              (mhash-ref v
-                                         ['pname : String]
-                                         ['meta 'description : String #f]
-                                         ['version : String ""]
-                                         ['meta 'homepage : (U String (Listof String)) ""])])
-                  (when desc ;; some packages (like nixos.all-cabal-hashes) are not ordinary packages, and should be disqualified
-                    (let* ([os (format "adding ~a" name)]
-                           [cur-str-len (string-length os)]
-                           [sd (- last-str-len cur-str-len)])
-                      (if (positive? sd)
-                          (printf "\r~a~a" os (make-string sd #\space))
-                          (printf "\r~a" os))
-                      (set! last-str-len (string-length os))
-                      (query dbconn "insert or replace into nixpkgs values ($1, $2, $3, $4)" name desc ver (if (list? home) (car home) home))))))
+              (when
+                  (and name
+                       (= 0 (for/fold ([last-str-len : Natural 0])
+                                      ([(_ v) (in-jshash source)])
+                              (let-values ([(name desc ver home) ;; yes, i'm aware that name & desc shadow
+                                            (mhash-ref v
+                                                       ['pname : String]
+                                                       ['meta 'description : String #f]
+                                                       ['version : String ""]
+                                                       ['meta 'homepage : (U String (Listof String)) ""])])
+                                (if desc ;; some packages (like nixos.all-cabal-hashes) do not have descriptions, are not ordinary packages, and should be disqualified
+                                  (let* ([os (format "~a ~a" (if update? "updating" "adding") name)]
+                                         [cur-str-len (string-length os)]
+                                         [sd (- last-str-len cur-str-len)])
+                                    (if (positive? sd)
+                                        (printf "\r~a~a" os (make-string sd #\space))
+                                        (printf "\r~a" os))
+                                    (query dbconn "insert or replace into nixpkgs values ($1, $2, $3, $4)" name desc ver (if (list? home) (car home) home))
+                                    (string-length os))
+                                  last-str-len)))))
+                (printf "~nno packages matched selector \"~a\", so no packages were updated." name))
               (close-input-port source)
               (close-output-port sink)
-              (close-input-port err)]))
+              (close-input-port err)])
+           (display "\n"))
 
          (let* ([% (λ ([s : String]) (if exact? s (format "%~a%" s)))]
                 [result-set
@@ -169,8 +177,11 @@
                        [name (query-rows dbconn "select * from nixpkgs where name like $1" (% (assert name string?)))]
                        [desc (query-rows dbconn "select * from nixpkgs where name like $1" (% (assert desc string?)))]
                        [else null])])
-           (unless (null? result-set)
-             (pretty-print (cast result-set (Listof (Vectorof String))))))
+           (if (null? result-set)
+               (if update?
+                   (void) ;; update would've already said that no packages were found
+                   (displayln "no matching packages found."))
+               (pretty-print (cast result-set (Listof (Vectorof String))))))
 
          (disconnect dbconn)))
       (error "program `nix-env` not found")))

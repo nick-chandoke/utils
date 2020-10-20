@@ -90,6 +90,21 @@
 ;;       [(even? i) (loop (add1 i) (car args) alst (cdr args))]
 ;;       [else (loop (add1 i) #f (cons (cons k (car args)) alst) (cdr args))])))
 
+;; (cons-id&val-if-truthy T alist id ...)
+;; e.g. (let ([x #f] [y : Integer 4] [z : "hi"]) (cons-id&val-if-truthy (U String Integer) null x y z)) will give
+;; '((y . 4) (z . "hi"))
+(define-syntax (cons-id&val-if-truthy stx)
+  (let* ([args (cdr (syntax->list stx))]
+         [T (car args)]
+         [alist (cadr args)]
+         [ks (map (λ (id) `(cons ',id ,id)) (cddr args))])
+    (datum->syntax
+     stx
+     `(foldr (λ ([p : (Pairof Symbol (Option ,T))] [acc : (AList Symbol ,T)])
+               (if (cdr p) (cons p acc) acc))
+             ,alist
+             (list ,@ks)))))
+
 ;;; filesystem
 
 (define (read-file-into-string [path : Path-String]) : String
