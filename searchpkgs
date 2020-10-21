@@ -6,13 +6,15 @@
 ;; TODO: like any search program, it should cluster search results' terms, so that user can see overview of
 ;; results' span, and refine their search.
 
+;; TODO: does not find zenity (full name gnome3.zenity), even when not using the -A option.
+
 (provide (all-defined-out))
 (require "json-extra.rkt"
          srfi/2
          (only-in racket/list make-list append*)
          (only-in racket/string string-split string-join)
          (only-in racket/cmdline parse-command-line) ;; fortunately its type instantiation is irrelevant here
-         (only-in racket/system process*) ;; read from nix-env -qaP
+         (only-in racket/system process* system*) ;; read from nix-env -qaP
          (only-in racket/match match) ;; used against process*/ports' returned ports
          (only-in typed/db query query-rows disconnect SQL-Datum)
          (only-in typed/db/sqlite3 sqlite3-available? sqlite3-connect)
@@ -39,14 +41,14 @@
 (: pretty-print (-> (Listof (Vectorof String)) Void))
 (define (pretty-print vs)
   (let* ([x (foldr (λ ([v : (Vectorof String)] [acc : (Pairof (Listof (Immutable-Vector String Nonnegative-Fixnum String Nonnegative-Fixnum String)) (Pairof Nonnegative-Fixnum Natural))])
-                      (let* ([name-ver (format "~a ~a" (vector-ref v 0) (vector-ref v 2))]
-                             [name-ver-len : Nonnegative-Fixnum (string-length name-ver)]
-                             [homepage (vector-ref v 3)]
-                             [homepage-len : Nonnegative-Fixnum (string-length homepage)])
-                        (cons (cons (vector-immutable name-ver name-ver-len homepage homepage-len (vector-ref v 1))
-                                    (car acc))
-                              (cons (ann (max name-ver-len homepage-len (cadr acc)) Nonnegative-Fixnum)
-                                    (add1 (cddr acc))))))
+                     (let* ([name-ver (format "~a ~a" (vector-ref v 0) (vector-ref v 2))]
+                            [name-ver-len : Nonnegative-Fixnum (string-length name-ver)]
+                            [homepage (vector-ref v 3)]
+                            [homepage-len : Nonnegative-Fixnum (string-length homepage)])
+                       (cons (cons (vector-immutable name-ver name-ver-len homepage homepage-len (vector-ref v 1))
+                                   (car acc))
+                             (cons (ann (max name-ver-len homepage-len (cadr acc)) Nonnegative-Fixnum)
+                                   (add1 (cddr acc))))))
                    (cons (ann null (Listof (Immutable-Vector String Nonnegative-Fixnum String Nonnegative-Fixnum String))) (cons (ann 0 Nonnegative-Fixnum) 0))
                    vs)]
          [vs (car x)]
@@ -56,27 +58,27 @@
       (printf "┌~a~a~a┐~n" (make-string (+ 1 col1-len) #\─) "┬" (make-string 62 #\─)))
     (for ([v vs] [i (in-naturals)]) ; v : (Immutable-Vector String Nonnegative-Fixnum String Nonnegative-Fixnum String)
       (let* ([name-ver (vector-ref v 0)]
-              [name-ver-len (vector-ref v 1)]
-              [homepage (vector-ref v 2)]
-              [homepage-len (vector-ref v 3)]
-              [desc-raw (vector-ref v 4)]
-              [padded-name-ver (pad name-ver (- col1-len name-ver-len))]
-              [padded-homepage (pad homepage (- col1-len homepage-len))]
-              [desc/wb (let* ([x0 (split-string-at-every/word-boundary col2-max-len (if (string=? "" desc-raw) "<no description>" desc-raw))]
-                              [num-lines (length x0)])
-                         ;; ensure that x0 is at least 2 lines, to accomodate the name+ver and homepage
-                         (if (< num-lines 2)
-                             (append x0 (make-list (- 2 num-lines) ""))
-                             x0))]
-              [desc/wb-len (length desc/wb)] ;; number of rows in description
-              [padded-name-ver-homepage-list (if (> desc/wb-len 2)
-                                                 (cons padded-name-ver (cons padded-homepage (make-list (- desc/wb-len 2) (make-string col1-len #\space))))
-                                                 (list padded-name-ver padded-homepage))])
-         (for ([x padded-name-ver-homepage-list] [y desc/wb])
-           (printf "│~a │ ~a│~n" x (pad y (- (+ 1 col2-max-len) (string-length y)))))
-         (if (< i final-index)
-             (printf "├~a~a~a┤~n" (make-string (+ 1 col1-len) #\─) "┼" (make-string (+ col2-max-len 2) #\─))
-             (printf "└~a~a~a┘~n" (make-string (+ 1 col1-len) #\─) "┴" (make-string (+ col2-max-len 2) #\─)))))))
+             [name-ver-len (vector-ref v 1)]
+             [homepage (vector-ref v 2)]
+             [homepage-len (vector-ref v 3)]
+             [desc-raw (vector-ref v 4)]
+             [padded-name-ver (pad name-ver (- col1-len name-ver-len))]
+             [padded-homepage (pad homepage (- col1-len homepage-len))]
+             [desc/wb (let* ([x0 (split-string-at-every/word-boundary col2-max-len (if (string=? "" desc-raw) "<no description>" desc-raw))]
+                             [num-lines (length x0)])
+                        ;; ensure that x0 is at least 2 lines, to accomodate the name+ver and homepage
+                        (if (< num-lines 2)
+                            (append x0 (make-list (- 2 num-lines) ""))
+                            x0))]
+             [desc/wb-len (length desc/wb)] ;; number of rows in description
+             [padded-name-ver-homepage-list (if (> desc/wb-len 2)
+                                                (cons padded-name-ver (cons padded-homepage (make-list (- desc/wb-len 2) (make-string col1-len #\space))))
+                                                (list padded-name-ver padded-homepage))])
+        (for ([x padded-name-ver-homepage-list] [y desc/wb])
+          (printf "│~a │ ~a│~n" x (pad y (- (+ 1 col2-max-len) (string-length y)))))
+        (if (< i final-index)
+            (printf "├~a~a~a┤~n" (make-string (+ 1 col1-len) #\─) "┼" (make-string (+ col2-max-len 2) #\─))
+            (printf "└~a~a~a┘~n" (make-string (+ 1 col1-len) #\─) "┴" (make-string (+ col2-max-len 2) #\─)))))))
 
 (module+ main
   (unless (sqlite3-available?) (exit "sqlite3 library not found. you need to install it first."))
@@ -97,7 +99,8 @@
   (define b/c-no-file? : Boolean #f)
 
   (or (and-let*
-       ([nix-env-path (find-executable-path "nix-env")])
+       ([nix-env (find-executable-path "nix-env")]
+        [nix-channel (find-executable-path "nix-channel")])
 
        ((inst parse-command-line Void)
         (find-system-path 'run-file)
@@ -105,7 +108,7 @@
         `((once-each
            (("-n" "--name")
             ,(λ (_ n) (set! name (assert n string?)))
-            (("search package name by sql regex") . ("n")))
+            (("search package name by sql regex, or if used with -u/--update, select packgages by a nix-env(1)-compatible selector") . ("n")))
            (("-d" "--description")
             ,(λ (_ d) (set! desc (assert d string?)))
             (("search package description by sql regex") . ("d")))
@@ -129,40 +132,42 @@
          (set! update? #t)
          (set! b/c-no-file? #t))
 
-       (when (and update? (file-exists? dbloc)) (delete-file dbloc))
+       (when (and update? (not name) (file-exists? dbloc)) (delete-file dbloc))
 
-       (let ([dbconn (sqlite3-connect #:database dbloc #:mode (if update? 'create 'read-only))])
+       (let ([dbconn (sqlite3-connect #:database dbloc #:mode (if update? (if name 'read/write 'create) 'read-only))])
          (when update?
+           (displayln (if pkgset (string-append "updating " (cast pkgset String) "...") "updating all nix channels..."))
+           (unless (apply system* nix-channel (list* "--update" (if pkgset (list (cast pkgset String)) null)))
+             (exit))
            (when b/c-no-file? (printf "file ~a not found. building db...~n" dbloc))
            (query dbconn "create table nixpkgs(name, description, version, homepage, primary key (name asc))")
            (match
-               (apply process* nix-env-path "-qa" "--json"
+               (apply process* nix-env "-qa" "--json"
                       ;; no idea why no automatic refinement for name nor pkgset here
                       (append
                        (if name (list (assert name string?)) null) ;; name is used as a selector here
                        (if pkgset (list "-A" (assert pkgset string?)) null)))
              [(list source sink _pid err _ask)
-              (when
-                  (and name
-                       (= 0 (for/fold ([last-str-len : Natural 0])
-                                      ([(_ v) (in-jshash source)])
-                              (let-values ([(name desc ver home) ;; yes, i'm aware that name & desc shadow
-                                            (mhash-ref v
-                                                       ['pname : String]
-                                                       ['meta 'description : String #f]
-                                                       ['version : String ""]
-                                                       ['meta 'homepage : (U String (Listof String)) ""])])
-                                (if desc ;; some packages (like nixos.all-cabal-hashes) do not have descriptions, are not ordinary packages, and should be disqualified
-                                  (let* ([os (format "~a ~a" (if update? "updating" "adding") name)]
-                                         [cur-str-len (string-length os)]
-                                         [sd (- last-str-len cur-str-len)])
-                                    (if (positive? sd)
-                                        (printf "\r~a~a" os (make-string sd #\space))
-                                        (printf "\r~a" os))
-                                    (query dbconn "insert or replace into nixpkgs values ($1, $2, $3, $4)" name desc ver (if (list? home) (car home) home))
-                                    (string-length os))
-                                  last-str-len)))))
-                (printf "~nno packages matched selector \"~a\", so no packages were updated." name))
+              (let ([nothing-found? (= 0 (for/fold ([last-str-len : Natural 0])
+                                                   ([(_ v) (in-jshash source)])
+                                           (let-values ([(name desc ver home) ;; NB. name & desc shadow
+                                                         (mhash-ref v
+                                                                    ['pname : String]
+                                                                    ['meta 'description : String #f]
+                                                                    ['version : String ""]
+                                                                    ['meta 'homepage : (U String (Listof String)) ""])])
+                                             (if desc ;; some packages (like nixos.all-cabal-hashes) do not have descriptions, are not ordinary packages, and should be disqualified
+                                                 (let* ([os (format "~a ~a" (if update? "updating" "adding") name)]
+                                                        [cur-str-len (string-length os)]
+                                                        [sd (- last-str-len cur-str-len)])
+                                                   (if (positive? sd)
+                                                       (printf "\r~a~a" os (make-string sd #\space))
+                                                       (printf "\r~a" os))
+                                                   (query dbconn "insert or replace into nixpkgs values ($1, $2, $3, $4)" name desc ver (if (list? home) (car home) home))
+                                                   (string-length os))
+                                                 last-str-len))))])
+                (when (and name nothing-found?)
+                  (printf "~nno packages matched selector \"~a\", so no packages were updated." name)))
               (close-input-port source)
               (close-output-port sink)
               (close-input-port err)])
@@ -177,11 +182,10 @@
                        [name (query-rows dbconn "select * from nixpkgs where name like $1" (% (assert name string?)))]
                        [desc (query-rows dbconn "select * from nixpkgs where name like $1" (% (assert desc string?)))]
                        [else null])])
+           (disconnect dbconn)
            (if (null? result-set)
                (if update?
                    (void) ;; update would've already said that no packages were found
                    (displayln "no matching packages found."))
-               (pretty-print (cast result-set (Listof (Vectorof String))))))
-
-         (disconnect dbconn)))
+               (pretty-print (cast result-set (Listof (Vectorof String))))))))
       (error "program `nix-env` not found")))
