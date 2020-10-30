@@ -1,0 +1,62 @@
+#! /usr/bin/env nix-shell
+#! nix-shell -i python -p python37Packages.mpd2
+
+# cmdref: <https://python-mpd2.readthedocs.io/en/latest/topics/commands.html>
+
+from sys import argv
+from mpd import MPDClient
+from os import rename, system, getenv
+from os.path import exists, normpath, basename, isdir, sep
+
+def alert(msg):
+    print(msg)
+    system("zenity --error --text='" + msg + "'")
+
+graveyard = normpath(getenv("HOME") + sep + ".deleted-music")
+music_dir = normpath(getenv("HOME") + sep + "music")
+
+if exists(graveyard):
+    if isdir(graveyard):
+        pass
+    else:
+        print("%s exists but is not a directory! please rename it or edit this source code to set to where to move \"deleted\" music files." % msg)
+        exit(1)
+else:
+    graveyard.mkdir()
+
+def main():
+    client = MPDClient()
+    try:
+        client.connect("localhost", 6600)
+        if len(argv) == 2:
+            if argv[1] == "next":
+                client.next()
+            elif argv[1] == "prev":
+                client.previous()
+            elif argv[1] == "pause":
+                client.pause()
+            elif argv[1] == "del-playing":
+            # ideally i'd be able to select songs in vimpc and press a key to run a script on the selected items, namely: moving songs to ~/.deleted-music then going to the next song if available
+                cur_song = client.currentsong()
+                if cur_song:
+                    cur_song_uri = cur_song["file"] # path relative to music directory
+                    relgrave = basename(cur_song_uri)
+                    grave = normpath(graveyard + "/" + relgrave)
+                    if exists(grave):
+                        alert("not deleting " + relgrave + ". a file with that name already exists in " + graveyard)
+                    else:
+                        # rename(normpath(client.config()["music_directory"] + sep + cur_song_uri), grave)
+                        rename(normpath(music_dir + sep + cur_song_uri), grave)
+                        client.deleteid(cur_song["id"]) # remove song from the playlist
+                        # client.update(cur_song_uri) # remove song from the music library. not using b/c it doesn't work, and makes bad song indices
+                        client.next()
+                else:
+                    pass
+        else:
+            print("you must specify one arg: one of next, prev, or del-playing")
+
+        client.disconnect()
+    except ConnectionRefusedError as e:
+        alert("could not connect to mpd")
+
+if __name__ == '__main__': main()
