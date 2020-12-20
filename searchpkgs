@@ -150,6 +150,8 @@
              [(list source sink _pid err _ask)
               (let ([nothing-found? (= 0 (for/fold ([last-str-len : Natural 0])
                                                    ([(_ v) (in-jshash source)])
+                                           ;; TODO: change name to be the key when looping through the json dict; that's the name
+                                           ;; to put in your config file when installing stuff...sometimes, apparently.
                                            (let-values ([(name desc ver home) ;; NB. name & desc shadow
                                                          (mhash-ref v
                                                                     ['pname : String]

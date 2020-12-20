@@ -1,16 +1,31 @@
 #lang typed/racket/base
 
-;;; miscellaneous functions
+(module untyped racket/base
+  (provide alist get-kwarg)
+  (require (for-syntax racket/base))
+  (define (alist . args)
+    (let loop
+        ([i 0]
+         [k #f] ;; buffer
+         [alst null]
+         [args args]) ;; accumulator
+      (cond
+        [(null? args) (reverse alst)]
+        [(even? i) (loop (add1 i) (car args) alst (cdr args))]
+        [else (loop (add1 i) #f (cons (cons k (car args)) alst) (cdr args))])))
+  (define-syntax (get-kwarg stx)
+    (let ([args (cdr (syntax->datum stx))])
+      (datum->syntax stx `(let ([x (member ',(string->keyword (symbol->string (car args))) ,(cadr args))])
+                            (and x (cadr x)))))))
 
 (provide (all-defined-out))
 (require "ring-buffer.rkt"
-         (for-syntax racket/base (only-in racket/function curry))
-         (for-syntax racket/base)
+         (for-syntax racket/base syntax/parse (only-in racket/function curry))
          (only-in racket/file make-temporary-file)
          (only-in racket/format ~a)
          (only-in racket/function curry)
          (only-in racket/port copy-port port->string)
-         (only-in racket/string string-split string-suffix? string-replace non-empty-string? string-prefix?)
+         (only-in racket/string string-split string-suffix? string-replace non-empty-string? string-prefix? string-trim)
          (only-in racket/system process)
          (only-in racket/vector vector-split-at vector-append)
          srfi/2
@@ -27,6 +42,12 @@
 (define-type (AList a b) (Listof (Pairof a b)))
 
 ;;; syntax
+
+;; e.g. (? (> 3 4) ? (displayln "hi") (displayln "yo") : "pizza")
+(define-syntax (? stx)
+  (syntax-parse stx #:datum-literals (? :)
+                [(_ cond:expr ? t:expr ... : f:expr ...)
+                 #'(if cond (begin t ...) (begin f ...))]))
 
 ;; e.g. (reduced-let let* binds body)
 ;; whatever form of let, but (... () body ...+) becomes (begin body ...+), (... () body) becomes body
@@ -53,16 +74,15 @@
   (datum->syntax stx `(thread (λ () ,@(cdr (syntax->datum stx))))))
 
 ;; to disambiguate against consing a thing onto a list
-(: pair (All (a b) (-> a b (Pairof a b))))
+(: pair (∀ (a b) (-> a b (Pairof a b))))
 (define pair cons)
-
-(define-syntax-rule (++ x) (set! x (+ 1 x)))
 
 (: ∞ (∀ (a) (-> (-> a) a)))
 (define (∞ f) (f) (∞ f))
 
 ;; like (hash), but produces an list rather than a hashmap
 ;; (alist 20 24 'hello 'there (+ 1 2) 'is3) => '((20 . 24) (hello . there) (3 . is3))
+;; NOTE: you'll get better type mismatch errors if you use (list (cons ...) ...) instead of alist
 (define-syntax (alist stx)
   (let loop
       ;; we can't merely set k to #f on
@@ -77,18 +97,6 @@
       [(null? args) (datum->syntax stx `(reverse (list ,@alst)))]
       [(even? i) (loop (add1 i) (car args) alst (cdr args))]
       [else (loop (add1 i) #f (cons `(cons ,k ,(car args)) alst) (cdr args))])))
-
-;; untyped version. useful in define-for-syntax
-;; (define (alist@ . args)
-;;   (let loop
-;;       ([i 0]
-;;        [k #f] ;; buffer
-;;        [alst null]
-;;        [args args]) ;; accumulator
-;;     (cond
-;;       [(null? args) (reverse alst)]
-;;       [(even? i) (loop (add1 i) (car args) alst (cdr args))]
-;;       [else (loop (add1 i) #f (cons (cons k (car args)) alst) (cdr args))])))
 
 ;; (cons-id&val-if-truthy T alist id ...)
 ;; e.g. (let ([x #f] [y : Integer 4] [z : "hi"]) (cons-id&val-if-truthy (U String Integer) null x y z)) will give
@@ -105,10 +113,16 @@
              ,alist
              (list ,@ks)))))
 
+;;; miscellaneous functions
+
+;; à la haskell
+(: die (->* (String) (Integer) Void))
+(define (die s [ec 1]) (displayln s (current-error-port)) (exit ec))
+
 ;;; filesystem
 
-(define (read-file-into-string [path : Path-String]) : String
-  (call-with-input-file path port->string))
+(: read-file-into-string (-> Path-String String))
+(define (read-file-into-string path) (call-with-input-file path port->string))
 
 ;; mkdir -p.
 (: make-directory-rec (-> Path-String Void))
@@ -128,7 +142,8 @@
         (make-directory final-dir)))))
 
 ;; format a real as a dollar amount
-(define ($ [n : Real]) : String
+(: $ (-> Real String))
+(define ($ n)
   (let* ([strs (string-split (number->string n) ".")]
          [non-decimal : (Listof Char) (string->list (car strs))]
          [decimals (if (= 2 (length strs))
@@ -150,11 +165,8 @@
                                (cdr non-decimal))))
      decimals)))
 
-(define (kabob-case->upper_snake [s : Symbol]) : String
-  (string-replace (string-upcase (symbol->string s)) "-" "_"))
-
-(define (percent-change [a : Real] [b : Real]) : Real
-  (/ (* 100 (- b a)) a))
+(: percent-change (-> Real Real Real))
+(define (percent-change a b) (/ (* 100 (- b a)) a))
 
 ;;; iterators/sequences
 
@@ -239,7 +251,8 @@
 
 ;; also truncates decimals to 2 places, for particular convenience for this stock-portions
 ;; program, since doing so happens to be appropriate since we're using thousandComma only for dollar figures
-(define (thousandComma [n : Real]) : String
+(: thousandComma (-> Real String))
+(define (thousandComma n)
   (let* ([strs (string-split (number->string n) ".")]
          [non-decimal (car strs)]
          [decimals (if (= 2 (length strs))
@@ -258,7 +271,8 @@
      decimals)))
 
 ;; scraps trailing ".0" if present
-(define (trim-useless-point-0 [s : String]) : String
+(: trim-useless-point-0 (-> String String))
+(define (trim-useless-point-0 s)
   (if (string-suffix? s ".0")
       (substring s 0 (- (string-length s) 2))
       s))
@@ -286,8 +300,7 @@
       (close-input-port errp)
       (close-output-port outp))))
 
-;; function seems to work, though racket says that it can't find either the tempfile (source) or original file (dest).
-;; astonishingly, just like cp(1), it doesn't tell which of the two it can't find. such stupidity should be illegal.
+;; function seems to work, though racket says that it can't find either the tempfile (source) or original file (dest) -- assumedly only one of the two
 (: replace-matching-lines-in-file (-> (-> String Boolean) (-> String (Option String)) Path-String [#:first-only? Boolean] Void))
 (define (replace-matching-lines-in-file pred endo path #:first-only? [fo? #f])
   ((inst with-input-from-file Void)

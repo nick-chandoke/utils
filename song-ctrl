@@ -2,6 +2,8 @@
 #! nix-shell -i python -p python37Packages.mpd2
 
 # cmdref: <https://python-mpd2.readthedocs.io/en/latest/topics/commands.html>
+# exit codes: 1: couldn't connect to mpd; 2: not moving file to "deleted" folder b/c file w/that name already exists.
+# TODO: rather than move basename to deleted folder, move whole path relative to musir dir to deleted folder, creating dirs as necessary
 
 from sys import argv
 from mpd import MPDClient
@@ -20,7 +22,7 @@ if exists(graveyard):
         pass
     else:
         print("%s exists but is not a directory! please rename it or edit this source code to set to where to move \"deleted\" music files." % msg)
-        exit(1)
+        exit(2)
 else:
     graveyard.mkdir()
 
@@ -56,7 +58,9 @@ def main():
             print("you must specify one arg: one of next, prev, or del-playing")
 
         client.disconnect()
+        exit(0)
     except ConnectionRefusedError as e:
         alert("could not connect to mpd")
+        exit(1)
 
 if __name__ == '__main__': main()
