@@ -402,7 +402,7 @@ syntax: (json-struct struct-name field-tree struct-opts) where
                                  ,(cond [export `(,export (,f-accessor-fn o))]
                                         [const-out const-out]
                                         [cast `(cast (,f-accessor-fn o) ,cast)]
-                                        [(symbol=? 'Real f-type) `(real->jsexpr (,f-accessor-fn o))]
+                                        [(equal? 'Real f-type) `(real->jsexpr (,f-accessor-fn o))]
                                         [json-struct-export-f
                                          (if (equal? 'no-export json-struct-export-f)
                                              (raise-syntax-error 'json-struct (format "~a was defined with #:no-export; cannot auto-derive ->jsexpr function for this field." f-type) f)
