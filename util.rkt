@@ -26,7 +26,8 @@
          (only-in racket/function curry)
          (only-in racket/port copy-port port->string)
          (only-in racket/string string-split string-suffix? string-replace non-empty-string? string-prefix? string-trim)
-         (only-in racket/system process)
+         (only-in racket/system process process/ports)
+         (only-in racket/match match)
          (only-in racket/vector vector-split-at vector-append)
          srfi/2
          ;; typed/racket/unsafe
@@ -42,6 +43,13 @@
 (define-type (AList a b) (Listof (Pairof a b)))
 
 ;;; syntax
+
+;; e.g. ((λcase [c : Integer] [(3) 4] [else (add1 c)]) 3) => 4
+(define-syntax (λcase stx)
+  (let* ([args (cdr (syntax->datum stx))]
+         [v (car args)]
+         [rst (cdr args)])
+    (datum->syntax stx `(λ (,v) (case ,(car v) ,@rst)))))
 
 ;; e.g. (? (> 3 4) ? (displayln "hi") (displayln "yo") : "pizza")
 (define-syntax (? stx)
@@ -98,9 +106,15 @@
       [(even? i) (loop (add1 i) (car args) alst (cdr args))]
       [else (loop (add1 i) #f (cons `(cons ,k ,(car args)) alst) (cdr args))])))
 
-;; (cons-id&val-if-truthy T alist id ...)
-;; e.g. (let ([x #f] [y : Integer 4] [z : "hi"]) (cons-id&val-if-truthy (U String Integer) null x y z)) will give
-;; '((y . 4) (z . "hi"))
+#| (cons-id&val-if-truthy T alist id ...)
+   produces (AList Symbol T). T must be the union of all the id's types. you're required to specify it because cons-id&val-if-truthy expands to a foldr, and we need to specify its inner lambda's types.
+   for each id, if its value is truthy, then the pair of the identifier-as-a-symbol and the identifier's value is (purely) consed into alist.
+
+example:
+   (let ([x #f] [y : Integer 4] [z : "hi"])
+     (cons-id&val-if-truthy (U String Integer) null x y z))
+   => '((y . 4) (z . "hi"))
+|#
 (define-syntax (cons-id&val-if-truthy stx)
   (let* ([args (cdr (syntax->list stx))]
          [T (car args)]
@@ -108,7 +122,8 @@
          [ks (map (λ (id) `(cons ',id ,id)) (cddr args))])
     (datum->syntax
      stx
-     `(foldr (λ ([p : (Pairof Symbol (Option ,T))] [acc : (AList Symbol ,T)])
+     `(foldr (λ ([p : (Pairof Symbol (Option ,T))]
+                 [acc : (AList Symbol ,T)])
                (if (cdr p) (cons p acc) acc))
              ,alist
              (list ,@ks)))))
@@ -123,6 +138,20 @@
 
 (: read-file-into-string (-> Path-String String))
 (define (read-file-into-string path) (call-with-input-file path port->string))
+
+(: read-from-process (-> String String))
+(define (read-from-process p)
+  ;; process/ports has a complex case-> type. run (:query-type/args process/ports #f #f #f String) in the typed racket repl for details
+  (match (process/ports #f #f #f p)
+    [(list source sink _pid err ask)
+     (ask 'wait)
+     (let ([source (cast source Input-Port)]
+           [sink (cast sink Output-Port)]
+           [err (cast err Input-Port)])
+       (begin0 (port->string source)
+         (close-input-port source)
+         (close-output-port sink)
+         (close-input-port err)))]))
 
 ;; mkdir -p.
 (: make-directory-rec (-> Path-String Void))
@@ -189,7 +218,7 @@
      null?)))
 
 ;; uses a ring buffer to produce vectors of length len (or less, before the ring buffer is filled)
-;; you need to supply a dummy value for a, to fill the ring buffer with that value for its initialization.
+;; you need to supply a dummy value for a, to fill the ring buffer with that value for its initial (n - 1) values
 (: in-inits/vector (All (a) (-> Natural a (Listof a) (Sequenceof (Vectorof a)))))
 (define (in-inits/vector len init-val xs)
   (let ([iter : (Listof a) xs]
@@ -198,7 +227,7 @@
     ((inst in-producer (Vectorof a))
      (λ ()
        (if (null? iter)
-           (begin0 (ring-buffer->vector left) (set! done? #t))
+           (begin (set! done? #t) (ring-buffer->vector left))
            (begin (ring-buffer-push! (car iter) left)
                   (set! iter (cdr iter))
                   (ring-buffer->vector left))))

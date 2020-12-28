@@ -1,0 +1,62 @@
+#!/usr/bin/env racket
+#lang racket/base
+
+;;; a simple example of preparing a system, waiting for it to prepare if necessary, then running a dependent process.
+
+(require (only-in racket/match match)
+         (only-in racket/system process/ports system)
+         (only-in racket/port port->string))
+(define (read-from-process p)
+  (match (process/ports #f #f #f p)
+    [(list source sink _pid err ask)
+     (ask 'wait)
+     (begin0 (port->string source)
+       (close-input-port source)
+       (close-output-port sink)
+       (close-input-port err))]))
+
+(define-syntax-rule (system-or-die proc msg)
+  (unless (system proc) (displayln msg (current-error-port)) (exit)))
+
+(module+ main
+  (require (only-in racket/system system)
+           (only-in racket/cmdline command-line))
+
+  ;; these are here to make easier for other users
+  (define connect-cmd "ssh nic@192.168.56.101")
+  (define vm-name "arch")
+  (define running? (not (string=? "" (read-from-process (format "VBoxManage list runningvms | grep ~a" vm-name)))))
+  (define restart? #f)
+  (define startup-time 10)
+  (command-line #:once-each
+                [("-r" "--restart")
+                 "restart vm before trying to login, if it's running; if not running, has no effect."
+                 (set! restart? #t)]
+                [("--vm") vm
+                 "choose a particular vm by name"
+                 (set! vm-name vm)]
+                [("-s" "--stop")
+                 "stop the vm"
+                 (system (format "VBoxManage controlvm ~a acpipowerbutton" vm-name))
+                 (exit)]
+                #:args _ ;; no additional args supported; ignore. #:args is needed for syntax conformance
+                ;; this block prepares us for trying to ssh into vm, unless vm is already prepared,
+                ;; in which case we ssh in, then exit when the ssh session ends
+                (with-handlers ([exn:break? (λ (e) (exit 1))])
+                  (cond [(and running? restart?) ;; restart is valid only if already running; if not running, then "restart" is meaningless
+                         (displayln "restarting vm...")
+                         (system (format "VBoxManage controlvm ~a reset" vm-name))]
+                        ;; TODO: if connect-cmd hangs for too long (2s), then restart the vm
+                        [running? (system-or-die connect-cmd "failed to ssh into vm even though it's running!")]
+                        [else (displayln "starting vm...")
+                              (system-or-die (format "VBoxManage startvm ~a --type headless" vm-name) "failed to start vm!")])
+                  (printf "giving ~a for VM's sshd to be ready to accept connections...~n" startup-time)
+                  (sleep startup-time)
+                  (let loop ([successful-connection? (system connect-cmd)]
+                             [first-loop? #t])
+                    (if successful-connection?
+                        (exit) ;; successful-connection? == 0 => we're in the ssh shell; (exit) is called when that shell exits
+                        (begin
+                          (when first-loop? (displayln "waiting for vm to become ready for remote connection..."))
+                          (sleep 2)
+                          (loop (system connect-cmd) #f)))))))
