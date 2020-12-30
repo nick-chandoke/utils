@@ -31,8 +31,20 @@
 (: empty-zipper (∀ (a) (-> (Zipper a))))
 (define (empty-zipper) ((inst zipper a) null #f null))
 
-(: make-zipper (∀ (a) (-> (Listof a) (Option a) (Listof a) (Zipper a))))
-(define (make-zipper l e r) (zipper (reverse l) e r))
+;; if you do not specify the selected element and the "after" list,
+;; then the cursor is set to the leftmost element.
+(: make-zipper (∀ (a) (case->
+                       (-> (Listof a) (Option a) (Listof a) (Zipper a))
+                       (-> (Listof a) (Zipper a)))))
+(define make-zipper
+  (case-lambda [([l : (Listof a)] [e : (Option a)] [r : (Listof a)])
+                (if (and (not e) (not (and (null? l) (null? r))))
+                    (raise-arguments-error 'make-zipper "current element = #f <=> before & after are both null"
+                                           "before" l
+                                           "current" e
+                                           "after" r)
+                    ((inst zipper a) (reverse l) e r))]
+               [([xs : (Listof a)]) ((inst zipper a) null (car xs) (cdr xs))]))
 
 ;; move the zipper cursor to the left by one element
 ;; returns original object if cursor is already at beginning of zipper
