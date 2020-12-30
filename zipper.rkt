@@ -1,6 +1,7 @@
 #lang typed/racket/base
 
 ;;; simple zipper created for curses text field entry
+;; all insert operations performed on the empty zipper return a singleton zipper (only the current element is set, and before & after are both null)
 
 (require srfi/2 (for-syntax racket/base))
 (provide (except-out (all-defined-out) zipper uncons nzh))
@@ -20,7 +21,7 @@
   (if (null? xs) #f (cons (car xs) (cdr xs))))
 
 (struct (a) zipper
-  ([before : (Listof a)] ;; before is stored in reverse order for more efficent zipper-left
+  ([before : (Listof a)] ;; before is stored in reverse order for more efficent zipper-move-left
    [current : (Option a)]
    [after : (Listof a)])
   #:type-name Zipper)
@@ -48,8 +49,8 @@
 
 ;; move the zipper cursor to the left by one element
 ;; returns original object if cursor is already at beginning of zipper
-(: zipper-left (∀ (a) (-> (Zipper a) (Zipper a))))
-(define (zipper-left z)
+(: zipper-move-left (∀ (a) (-> (Zipper a) (Zipper a))))
+(define (zipper-move-left z)
   (nzh (or (and-let* ([uc (uncons (zipper-before z))])
                      (zipper (cdr uc) (car uc) (cons (zipper-current z) (zipper-after z))))
            z)
@@ -57,25 +58,30 @@
 
 ;; move the zipper cursor to the right by one element
 ;; returns original object if cursor is already at end of zipper
-(: zipper-right (∀ (a) (-> (Zipper a) (Zipper a))))
-(define (zipper-right z)
+(: zipper-move-right (∀ (a) (-> (Zipper a) (Zipper a))))
+(define (zipper-move-right z)
   (nzh (or (and-let* ([uc (uncons (zipper-after z))])
                  (zipper (cons (zipper-current z) (zipper-before z)) (car uc) (cdr uc)))
            z)
        z))
 
+(: zipper-insert-before-cursor (∀ (a) (-> a (Zipper a) (Zipper a))))
+(define (zipper-insert-before-cursor e z)
+  (nzh (struct-copy zipper z [before (cons e (zipper-before z))])
+       (zipper null e null)))
+
 ;; insert before current, pushing elements to the right.
 ;; akin to 'i' in vim
-(: zipper-insert (∀ (a) (-> a (Zipper a) (Zipper a))))
-(define (zipper-insert e z)
+(: zipper-insert-at-cursor (∀ (a) (-> a (Zipper a) (Zipper a))))
+(define (zipper-insert-at-cursor e z)
   (nzh (struct-copy zipper z [current e] [after (cons zc (zipper-after z))])
        (zipper null e null)))
 
 ;; insert after current, pushing elements to the right.
 ;; if cursor is at last element, then it grows the "after" array
 ;; akin to 'a' in vim
-(: zipper-append (∀ (a) (-> (Zipper a) a (Zipper a))))
-(define (zipper-append z e)
+(: zipper-insert-after-cursor (∀ (a) (-> (Zipper a) a (Zipper a))))
+(define (zipper-insert-after-cursor z e)
   (nzh
    (struct-copy zipper z [after (cons e (zipper-after z))])
    (zipper null e null)))
@@ -83,8 +89,8 @@
 ;; append after rightmost element. zipper's cursor is ignored.
 ;; akin to 'A' in vim
 ;; moves cursor to the end of the list, at the position of the appended element
-(: zipper-append* (∀ (a) (-> (Zipper a) a (Zipper a))))
-(define (zipper-append* z e)
+(: zipper-append-at-end (∀ (a) (-> (Zipper a) a (Zipper a))))
+(define (zipper-append-at-end z e)
   (nzh (zipper (zipper->list z) e null)
        (zipper null e null)))
 
@@ -93,8 +99,8 @@
 ;; are shifted leftward.
 ;; if cursor is at the last element, then that element is discarded
 ;; and the cursor shifts leftward.
-(: zipper-remove (∀ (a) (-> (Zipper a) (Zipper a))))
-(define (zipper-remove z)
+(: zipper-remove-at-cursor (∀ (a) (-> (Zipper a) (Zipper a))))
+(define (zipper-remove-at-cursor z)
   (nzh
    ;; nzh guarantees that current is not #f
    (let ([uca (uncons (zipper-after z))]
@@ -118,3 +124,9 @@
   (nzh
    (+ 1 (length (zipper-before z)) (length (zipper-after z)))
    0))
+
+(: zipper-has-before? (∀ (a) (-> (Zipper a) Boolean)))
+(define (zipper-has-before? z) (not (null? (zipper-before z))))
+
+(: zipper-has-after? (∀ (a) (-> (Zipper a) Boolean)))
+(define (zipper-has-after? z) (not (null? (zipper-after z))))
