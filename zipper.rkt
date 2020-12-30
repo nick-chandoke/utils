@@ -65,6 +65,11 @@
            z)
        z))
 
+(: zipper-insert-at-beginning (∀ (a) (-> a (Zipper a) (Zipper a))))
+(define (zipper-insert-at-beginning e z)
+  (nzh (struct-copy zipper z [before (append (zipper-before z) (list e))])
+       (zipper null e null)))
+
 (: zipper-insert-before-cursor (∀ (a) (-> a (Zipper a) (Zipper a))))
 (define (zipper-insert-before-cursor e z)
   (nzh (struct-copy zipper z [before (cons e (zipper-before z))])
