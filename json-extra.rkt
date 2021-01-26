@@ -3,23 +3,22 @@
 ;;; json accessors and constructors, and hashtable utils
 ;; NOTE: check-out the argo package for validating, pretty-printing, compressing/minifying, and extracting subexprs from json.
 
-(provide (except-out (combine-out (all-defined-out) JSExpr)))
+(provide (combine-out (all-defined-out) (all-from-out typed/json)))
 
 (require (only-in racket/bool symbol=?)
          (only-in racket/function const identity)
          typed/json
          srfi/2
-         (only-in racket/string string-join string-split)
-         (only-in racket/list range make-list)
          (only-in racket/set set-member?)
          (only-in racket/format ~a)
+         (only-in "util.rkt" pretty-table-str)
          (for-syntax racket/base srfi/2
                      (only-in racket/bool symbol=?)
                      (only-in racket/list splitf-at)
                      (only-in racket/match match)
                      (only-in racket/list take filter-map)
                      (only-in racket/function identity)
-                     (only-in (submod "util.rkt" untyped) get-kwarg)))
+                     (only-in (submod "util.rkt" untyped) get-kwarg get-kwarg/t)))
 
 (require/typed srfi/1 (list-index (All (a) (-> (-> a Boolean) (Listof a) (Option Index)))))
 
@@ -63,8 +62,8 @@ z ;; 90 : JSExpr
 ;; uh-oh causes the whole program to crash
 
 * returns (Values ...) to ensure that number of arguments exactly equals number of returned keys
-* unless #:list keyword is specified. #:list may be specified anywhere in mhash-ref's arg list
-  * useful for using mhash-ref with apply. #:list returns type (List ...), i.e. a list of definite length
+  * unless #:list keyword is specified. #:list may be specified anywhere in mhash-ref's arg list
+    * useful for using mhash-ref with apply. #:list returns type (List ...), i.e. a list of definite length
 * assumes whether the jsexpr is a list or hash based on what the first accessor implies
 * assumes that keys are Symbols, as is the case in JSExpr
 * if only one accessor is given, then returns a single value bindable in an ordinary let block (cf let-values)
@@ -83,6 +82,8 @@ maybe-type-def =
                | : type else ;; if lookup fails, use the "else" value instead
 maybe-map =
           | -> (: fn (-> type other-type)) ;; supply the value found from maybe-type-def to a function; that output is returned
+
+an example accessor with a map is ['ticker : String -> string->symbol]
 |#
 (define-syntax (mhash-ref stx)
   (let*-values ([(args) (cdr (syntax->list stx))]
@@ -280,9 +281,9 @@ syntax: (json-struct struct-name field-tree struct-opts) where
   import = ;; if nothing given, then the JSExpr is cast to the field type
          | #:parse (-> (U 'not-found JSExpr) type)
          | #:unsafe-parse (-> JSExpr type) ;; assumes that value is found
-         | #:or <inhabitant of type> ;; if lookup fails, use this value
+         | #:or <inhabitant of type> ;; if lookup fails, use this value. works only for Real and members of the JSExpr union. if type was defined via json-struct without the #:no-parse option, then use #:auto-or
+         | #:auto-or <inhabitant of type> ;; #:or, but if value found, pass it to jsexpr->type. exceptions raised if type was not defined via json-struct or was so defined but with the #:no-parse option
          | #:init <inhabitant of type> ;; don't even both with lookup; just assume this value
-         | #:auto-or <inhabitant of type> ;; if type was defined by json-struct without #:no-parse, then #:unsafe-parse jsexpr->type is used; if the field name key is not present in the JSON map that we're parsing, then the value provided to #:auto-or is used. if type was not defined via json-struct or was defined with the #:no-parse option, then a syntax error is raised.
          | #:key Symbol ;; specify the JSON key name for this field; makes this field an exception to #:key->field
   export =
          | #:export (-> type JSExpr)
@@ -290,6 +291,8 @@ syntax: (json-struct struct-name field-tree struct-opts) where
          | #:cast-out type ;; do not transform the field, but cast it to type (which must be (U Inexact-Real Integer)) so that it can be put in a JSON object
          | #:const-out value ;; use this value instead of whatever the struct object's field's value is
 
+  * nested auto-deriving is limited to structures defined via json-struct. for example, say that MyType was defined via json-struct without #:no-parse. you cannot have a field [mt : (Option MyType) #:auto-or #f] because (Option MyType) was not defined via json-struct! only MyType was! for this functionality you'd need to use #:parse
+  * if type was defined by json-struct without #:no-parse, then #:unsafe-parse jsexpr->type is the assumed parser
   * specifying multiple import (or export) statements has undefined behavior
   * struct-opts are passed verbatim to struct, except two kwargs specific to this macro:
     * #:key->field proc: function to derive field name from JSON object key (String -> String)
@@ -344,11 +347,11 @@ syntax: (json-struct struct-name field-tree struct-opts) where
                                      [kwargs (cdddr f)]
                                      [k (or (eval (get-kwarg key kwargs)) ;; eval b/c k can validly be a symbol or identifier
                                             (eval `(string->symbol ,`(,key->field ,(symbol->string (car f))))))]
-                                     [otherwise (get-kwarg or kwargs)]
-                                     [init (get-kwarg init kwargs)]
-                                     [parse (get-kwarg parse kwargs)]
+                                     [otherwise    (get-kwarg/t or kwargs)]
+                                     [init         (get-kwarg/t init kwargs)]
+                                     [auto-or      (get-kwarg/t auto-or kwargs)]
+                                     [parse        (get-kwarg parse kwargs)]
                                      [unsafe-parse (get-kwarg unsafe-parse kwargs)]
-                                     [auto-or (get-kwarg auto-or kwargs)]
                                      [json-struct-parse-f (hash-ref parse-json-structs f-type #f)]
                                      [js-hash-ref '(inst hash-ref Symbol JSExpr)]
                                      [unsafe-hash-ref `((inst hash-ref Symbol JSExpr JSExpr) ;; yes, we need to specify that the lambda encapsulating error returns a JSExpr
@@ -359,9 +362,9 @@ syntax: (json-struct struct-name field-tree struct-opts) where
                                                                                    ',k
                                                                                    (jsexpr->string j)))))])
                                 (cond
-                                  [init init]
+                                  [init (cdr init)]
                                   [otherwise ;; cast needed b/c (hash-ref j ',k if successful, is JSExpr rather than ,f-type. sensible casting requires that (∩ f-type JSExpr) is not Nothing
-                                   `(cast (,js-hash-ref j ',k (λ () ,otherwise)) ,f-type)]
+                                   `(cast (,js-hash-ref j ',k (λ () ,(cdr otherwise))) ,f-type)]
                                   [parse `(,parse ((inst hash-ref Symbol JSExpr 'not-found) j ',k (λ () 'not-found)))]
                                   [unsafe-parse `(,unsafe-parse ,unsafe-hash-ref)]
                                   [auto-or
@@ -369,7 +372,11 @@ syntax: (json-struct struct-name field-tree struct-opts) where
                                        (if (equal? 'no-parse json-struct-parse-f)
                                            (raise-syntax-error 'json-struct (format "~a was defined with #:no-parse; cannot auto-derive parsing function for this field." f-type) f)
                                            `(let ([v (,js-hash-ref j ',k #f)])
-                                              (if v (,json-struct-parse-f v) ,auto-or)))
+                                              (if v (,json-struct-parse-f v)
+                                                  (let ([auto-or-val (cdr auto-or)])
+                                                    (if auto-or-val
+                                                        ,auto-or-val
+                                                        (raise-syntax-error 'json-struct (format "#:auto-or does not accept #f, since #:auto-or is only for types defined via json-struct, and (Option _) can never be such a type.") f))))))
                                        (raise-syntax-error 'json-struct (format "~a was not defined via json-struct. cannot auto-derive parsing function for this field." f-type) f))]
                                   [json-struct-parse-f
                                    (if (equal? 'no-parse json-struct-parse-f)
@@ -469,53 +476,29 @@ syntax: (json-struct struct-name field-tree struct-opts) where
 
 ;; convert a json to a list of lists, i.e. a table
 ;; to output this table as a csv, i recommend the csv-writing package
-(: json->table (-> String ;; header for the column of keys from the input hashmap
+(: property-map->table (-> String ;; header for the column of keys from the input hashmap
                    (Option (Listof Symbol)) ;; list of keys to include. if #f, gets key list from first object in provided hashmap
                    (HashTable Symbol JSHash) ;; hashmap to convert
                    (Listof (Listof String))))
-(define (json->table key-field fields j)
+(define (property-map->table key-field fields j)
   (or (and-let* ([first-pos (hash-iterate-first j)]
-                 [fields (sort (or fields (hash-keys (hash-iterate-value j first-pos))) symbol<?)]
-                 [header (cons key-field (map symbol->string fields))])
+                 [fields (sort (or fields (hash-keys (hash-iterate-value j first-pos))) symbol<?)])
                 ;; each row (except the header) is a list of (key-field field1 ... fieldn)
-                (cons header
+               (cons (cons key-field (map symbol->string fields))
                       (map (λ ([kv : (Pairof Symbol JSExpr)])
                              (cons (symbol->string (car kv)) (map (λ ([f : Symbol]) (~a (hash-ref (cast (cdr kv) JSHash) f))) fields)))
                            (hash->list j))))
       null))
 
-;; NB. if you specify a number of columns vector, json->pretty-table-str does not wrap cells whose string length is greater than the number of specified columns
-;; crashes if any of col-widths' values are shorter than the longest string in that column
-(: pretty-table-str (-> (Listof (Listof String))
-                        [#:col-widths (Option (Listof Nonnegative-Fixnum))] ;; calculating column widths is a fairly expensive operation;
-                        ;; you can specify a vector of column widths to reduce amount of computation.
-                        String))
-(define (pretty-table-str rows #:col-widths [col-widths #f])
-  (or (let ([col-widths (or col-widths
-                            (for/fold ([maxes : (Listof Nonnegative-Fixnum) (make-list (length (car rows)) 0)])
-                                      ([r rows])
-                              (map (λ ([m : Nonnegative-Fixnum] [cell : String])
-                                     (max m (string-length cell)))
-                                   maxes r)))])
-        (string-join (map (λ ([r : (Listof String)])
-                            (foldl (λ ([cell : String] [rml : Nonnegative-Fixnum] [acc : String])
-                                     (string-append acc cell (make-string (+ 2 (- rml (string-length cell))) #\space)))
-                                   ""
-                                   r
-                                   col-widths))
-                          rows)
-                     "\n"))
-      "<empty json table>"))
-
-;; convenience function: composes pretty-table-str & json->table
-(: json->pretty-table-str
+;; convenience function: composes pretty-table-str & property-map->table
+(: property-map->pretty-table-str
    (-> String
        (Option (Listof Symbol))
        (HashTable Symbol JSHash)
        [#:col-widths (Option (Listof Nonnegative-Fixnum))]
        String))
-(define (json->pretty-table-str key-field fields j #:col-widths [col-widths #f])
-  (pretty-table-str (json->table key-field fields j) #:col-widths col-widths))
+(define (property-map->pretty-table-str key-field fields j #:col-widths [col-widths #f])
+  (pretty-table-str (property-map->table key-field fields j) #:col-widths col-widths))
 
 #| assumes that all rows have the same number of fields
    key-field is the column string whose column comprises the resultant map's keys
