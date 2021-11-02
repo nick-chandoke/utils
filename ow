@@ -1,0 +1,25 @@
+#!/usr/bin/env janet
+
+;; use fzf to open a program interactively
+
+(import argparse :prefix "")
+(let [opts (argparse "Open file selected by fzf with a given program."
+                     "interactive" {:kind :flag
+                                    :short "i"
+                                    :help "use if the program that you specify runs interactively in the terminal"}
+                     :default {:kind :accumulate})]
+    (unless opts (os/exit 1))
+    (let [pos-args (opts :default)
+          prog (get pos-args 0)
+          dir (get pos-args 1)
+          exec-clause (if (opts "interactive")
+                          (string/format "execute(%s {})+abort" prog)
+                          (string/format "execute-silent(%s {} &)" prog))
+          find-clause (if dir
+                          (string/format " <<< \"$(find %s)\"" dir)
+                          "")]
+        (when (> (length pos-args) 2)
+            (xprintf stderr "USAGE: ow [-i] program [directory]. you gave too many positional arguments\n")
+            (os/exit 1))
+        (os/shell (string/format "fzf -e --bind \"enter:%s\"%s" exec-clause find-clause))
+        (os/exit 0)))
