@@ -1,6 +1,6 @@
 #!/usr/bin/env janet
 
-;; use fzf to open a program interactively
+# use fzf to open a program interactively
 
 (import argparse :prefix "")
 (let [opts (argparse "Open file selected by fzf with a given program."
