@@ -1,25 +1,32 @@
 #!/usr/bin/env janet
 
-# use fzf to open a program interactively
+# ow: "open with:" use fzf to open a program interactively
+
+# TODO:
+# use xdg-open
+# include automatic interactivity ("i" flag) based on program name.
+# sometimes leave fzf open while an interactive child process runs (e.g. mplayer)
 
 (import argparse :prefix "")
 (let [opts (argparse "Open file selected by fzf with a given program."
+                     # NOTE: options should not be seperated by whitespace, and short flags should be exactly one character
                      "interactive" {:kind :flag
                                     :short "i"
                                     :help "use if the program that you specify runs interactively in the terminal"}
+                     "recurse" {:kind :flag
+                                    :short "r"}
                      :default {:kind :accumulate})]
     (unless opts (os/exit 1))
     (let [pos-args (opts :default)
           prog (get pos-args 0)
           dir (get pos-args 1)
+          rec? (opts "recurse")
           exec-clause (if (opts "interactive")
                           (string/format "execute(%s {})+abort" prog)
                           (string/format "execute-silent(%s {} &)" prog))
-          find-clause (if dir
-                          (string/format " <<< \"$(find %s)\"" dir)
-                          "")]
+          find-clause (string/format " <<< \"$(find %s %s)\"" (or dir ".") (if rec? "" "-maxdepth 1"))]
         (when (> (length pos-args) 2)
             (xprintf stderr "USAGE: ow [-i] program [directory]. you gave too many positional arguments\n")
             (os/exit 1))
-        (os/shell (string/format "fzf -e --bind \"enter:%s\"%s" exec-clause find-clause))
+        (os/shell (string/format "fzf -e --bind \"enter:%s\"%s" exec-clause (or dir (if rec? "" find-clause))))
         (os/exit 0)))
