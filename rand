@@ -8,4 +8,4 @@ if l == 1:
 elif l == 2:
     print(random() * int(argv[1]))
 else:
-    stderr.write("Synopsis: rand [max]. Returns a truely random number between 0 and max, or between 0 and 1 if max is not specified.\n")
+    stderr.write("Synopsis: rand [max]. Returns a truly random number between 0 and max, or between 0 and 1 if max is not specified.\n")
