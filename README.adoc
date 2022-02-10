@@ -12,7 +12,7 @@ copy-playlists-to-ext-disk:: self-explanatory. expects m3u8 playlists.
 cs:: interactive color scheme selector. requires `fzf(1)`.
 del-not-here:: used with e.g. `cp -rut /mnt/backup/ /home` to synchronize folders' contents, here `/mnt/backup/home` with `/home`.
 extract-audio:: <obvious>
-fromsexy:: converts `.Xresources` output to a format usable by `kitty(1)`. named b/c i used it for <https://terminal.sexy>'s themes
+fromsexy:: converts `.Xresources` output to a format usable by `kitty(1)`. named b/c i used it for <https://terminal.sexy> 's themes
 lsext:: list the extensions of a given directory (and optionally its descendants) or list files of a given extension
 ow:: "open with." interactively browse files (using `fzf(1)`) and open them with a given program
 parrot.hs:: a server that displays your http request
