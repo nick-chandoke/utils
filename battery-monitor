@@ -1,0 +1,22 @@
+#!/usr/bin/env racket
+#lang racket/base
+
+(require "powerline" racket/system)
+
+;; triggers an alert each time battery crosses below 10%
+;; TODO: use wall(1) when not running in a graphical session
+
+(define alerted? #f)
+(define (system* p . args) (apply system* (find-executable-path p) args))
+
+(let forever ()
+  (void
+    (let ([bamt (get-charge%)])
+      (cond [(>= bamt 11) (set alerted? #f)]
+            [(and (not alerted?) (< bamt 10)) (system* "mpv" "--vid=no" "ssbm-challenger.mp3")
+                                              (system* "notify-send" "-u" "critical" "LOW BATTERY" (number->string (floor bamt)))
+                                              (set alerted? #t)]
+            [(and alerted? (< bamt 5)) (system* "systemctl" "suspend")
+                                       (set alerted? true)])))
+  (sleep 60)
+  (forever))

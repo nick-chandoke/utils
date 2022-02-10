@@ -1,0 +1,9 @@
+#!/usr/bin/env racket
+#lang racket/base
+(require racket/match (only-in racket/string string-prefix?))
+
+(match (current-command-line-arguments)
+  [(vector s) (cond [(= 1 (string-length s)) (let ([cp (char->integer (string-ref s 0))]) (printf "(0x~a, ~a)~n" (number->string cp 16) cp))]
+                    [(string-prefix? s "0x") (displayln (integer->char (string->number (substring s 2) 16)))]
+                    [else (displayln (integer->char (string->number s)))])]
+  [else (displayln "invalid arguments. please provide exactly one character or a number in dec or hex." (current-error-port))])

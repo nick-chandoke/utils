@@ -1,32 +1,61 @@
-#!/usr/bin/env janet
+#!/usr/bin/env racket
+#lang racket/base
 
-# ow: "open with:" use fzf to open a program interactively
+(require racket/cmdline racket/system racket/match (only-in racket/function identity)
+         (only-in racket/string string-prefix?)
+         racket/port)
 
-# TODO:
-# use xdg-open
-# include automatic interactivity ("i" flag) based on program name.
-# sometimes leave fzf open while an interactive child process runs (e.g. mplayer)
+;; ow: "open with:" use fzf to open a program interactively
+;; tip: create an alias about ow where the program to execute
+;; is xdg-open. however, xdg-open doesn't account for whether
+;; the program is interactive or not.
 
-(import argparse :prefix "")
-(let [opts (argparse "Open file selected by fzf with a given program."
-                     # NOTE: options should not be seperated by whitespace, and short flags should be exactly one character
-                     "interactive" {:kind :flag
-                                    :short "i"
-                                    :help "use if the program that you specify runs interactively in the terminal"}
-                     "recurse" {:kind :flag
-                                    :short "r"}
-                     :default {:kind :accumulate})]
-    (unless opts (os/exit 1))
-    (let [pos-args (opts :default)
-          prog (get pos-args 0)
-          dir (get pos-args 1)
-          rec? (opts "recurse")
-          exec-clause (if (opts "interactive")
-                          (string/format "execute(%s {})+abort" prog)
-                          (string/format "execute-silent(%s {} &)" prog))
-          find-clause (string/format " <<< \"$(find %s %s)\"" (or dir ".") (if rec? "" "-maxdepth 1"))]
-        (when (> (length pos-args) 2)
-            (xprintf stderr "USAGE: ow [-i] program [directory]. you gave too many positional arguments\n")
-            (os/exit 1))
-        (os/shell (string/format "fzf -e --bind \"enter:%s\"%s" exec-clause (or dir (if rec? "" find-clause))))
-        (os/exit 0)))
+;; TODO:
+;; include auto-interactivity based on program name.
+  ;; sometimes leave fzf open while an interactive child process runs (e.g. mplayer)
+
+;; e.g. (P #f (λ (x) (P x port->string "tr h z")) "echo" "hi")
+;; if you want synchronous processes, set current input/output ports, and use system*.
+;; TODO: i don't use this function at all; i use its body explicitly in order to
+;; close the input port later. make that more elegant
+#;(define (P in f cmd . args)
+  (match (apply process*/ports #f in 'stdout (find-executable-path cmd) args)
+         [(list output input _pid _err ask)
+          (ask 'wait)
+          (begin0 (f output)
+                  (close-input-port output)
+                  (when input (close-output-port input)))]))
+
+;; TODO: support create version for synchronous process/piping. see
+;; programming/racket/racket/collects/racket/system.rkt for definition of system*.
+
+(define interactive? #f)
+(define recurse? #f)
+
+(command-line
+  #:once-each [("-i" "--interactive") "use if the program that you specify runs interactively in the terminal, e.g. for the nano text editor" (set! interactive? #t)]
+              [("-r" "--recurse") "" (set! recurse? #t)]
+  #:ps "\nopen file selected by fzf with a given program.\n\nif you don't supply a directory, then the current directory's descendants are lazily loaded; if you specify a directory with --recurse, then its descendants are loaded strictly.)"
+  #:args (prog . opt-dir)
+  (let ([dir (if (null? opt-dir) #f (car opt-dir))])
+    (when dir
+      (unless (directory-exists? dir)
+      (fprintf (current-error-port) "directory ~a doesn't exist.~n" dir)
+      (when (string-prefix? dir "-")
+        (fprintf (current-error-port) "you probably meant to supply ~a as an option before ~a.~n" dir prog))
+      (exit 1)))
+    (let ([X (if (and (not dir) recurse?)
+                 #f
+                 (match (apply process*/ports #f (open-input-string "") 'stdout
+                               (find-executable-path "find")
+                               (cons (or dir ".") (if recurse? '() (list "-maxdepth" "1"))))
+                   [(list src _input _pid _err ask) #;(ask 'wait) src]))])
+      (when X (current-input-port X))
+      (system* (find-executable-path "fzf")
+                 "-e"
+                 "--bind"
+                 (string-append "enter:"
+                                (if interactive?
+                                    (format "execute(~a {})+abort" prog)
+                                    (format "execute-silent(~a {} &)" prog))))
+      (when X (close-input-port X)))))

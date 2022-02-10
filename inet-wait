@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-o=""
-while [[ -z "$o" ]]; do
-  o="$(ip a show $WDEV | awk '/inet / {print $2}')"
-  sleep 1
-done
-cvlc --play-and-exit $HOME/programming/op_finished.wav 2> /dev/null

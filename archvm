@@ -1,6 +1,8 @@
 #!/usr/bin/env racket
 #lang racket/base
 
+;; TODO: program tries to establish connection after we close ssh manually as per usual
+;; TODO: how to get the ip address to ssh into? apparently it isn't the one bound to virtual device vboxnet0
 ;;; a simple example of preparing a system, waiting for it to prepare if necessary, then running a dependent process.
 
 (require (only-in racket/match match)
@@ -35,7 +37,7 @@
                 [("--vm") vm
                  "choose a particular vm by name"
                  (set! vm-name vm)]
-                [("-s" "--stop")
+                #;[("-s" "--stop") ;; this command does nothing despite exiting w/0
                  "stop the vm"
                  (system (format "VBoxManage controlvm ~a acpipowerbutton" vm-name))
                  (exit)]

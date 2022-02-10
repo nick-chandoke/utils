@@ -1,258 +1,458 @@
-#lang typed/racket/base
+#lang racket/base
+(provide (except-out (combine-out (all-defined-out)
+                                  on-interval)
+                     __lms))
 
-(module untyped racket/base
-  (provide alist get-kwarg)
-  (require (for-syntax racket/base))
-  (define (alist . args)
-    (let loop
-        ([i 0]
-         [k #f] ;; buffer
-         [alst null]
-         [args args]) ;; accumulator
-      (cond
-        [(null? args) (reverse alst)]
-        [(even? i) (loop (add1 i) (car args) alst (cdr args))]
-        [else (loop (add1 i) #f (cons (cons k (car args)) alst) (cdr args))])))
-  (define-syntax (get-kwarg stx)
-    (let ([args (cdr (syntax->datum stx))])
-      (datum->syntax stx `(let ([x (member ',(string->keyword (symbol->string (car args))) ,(cadr args))])
-                            (and x (cadr x)))))))
-
-(provide (all-defined-out))
-(require "ring-buffer.rkt"
-         (for-syntax racket/base syntax/parse (only-in racket/function curry))
+(require (only-in "ring-buffer.rkt" in-interval)
+         (for-syntax racket/base
+                     (only-in racket/function curry)
+                     (only-in racket/list last range)
+                     (only-in racket/string string-join)
+                     (only-in racket/syntax syntax-local-eval)
+                     syntax/parse)
+         compatibility/defmacro
+         (only-in racket/bool symbol=?)
          (only-in racket/file make-temporary-file)
          (only-in racket/format ~a)
-         (only-in racket/function curry)
-         (only-in racket/port copy-port port->string)
-         (only-in racket/string string-split string-suffix? string-replace non-empty-string? string-prefix? string-trim)
-         (only-in racket/system process process/ports)
+         (only-in racket/function curry identity const)
+         (only-in racket/list make-list split-at splitf-at range shuffle dropf takef)
          (only-in racket/match match)
-         (only-in racket/vector vector-split-at vector-append)
+         (only-in racket/math exact-floor)
+         (only-in racket/port copy-port port->string)
+         (only-in racket/sequence sequence->list sequence-ref sequence-tail empty-sequence sequence-append)
+         (only-in racket/set set-member?)
+         (only-in racket/string string-split string-suffix? string-replace non-empty-string? string-prefix? string-trim string-join)
+         (only-in racket/system process process/ports)
+         (only-in racket/vector vector-split-at vector-append vector-member vector-copy vector-sort!)
+         (only-in srfi/13 string-fold)
          srfi/2
-         ;; typed/racket/unsafe
          syntax/parse/define)
 
-(require/typed srfi/13 (string-fold (All (a) (-> (-> Char a a) a String a))))
+(define (flip f) (λ (x y) (f y x)))
 
-;; currently unused. see replace-matching-lines-in-file.
-;; (unsafe-require/typed racket/base (copy-file (-> Path-String Path-String Boolean Void))) ;; typed version does not have "overwrite ok?" boolean
+;; take or null
+(define (</ n s)
+  (define f #f)
+  ;; if, at loop's end, (< i n), then (set! f #f)
+  (let ([x (let go ([i 0] [s s])
+             (if (null? s)
+                 (if (< i n)
+                     (set! f '())
+                     '())
+                 (cons (car s) (go (+ i 1) (cdr s)))))])
+    (or f x)))
 
-;;; types
+;; take what we can
+(define (<- n s)
+  (let go ([i 0] [s s])
+    (if (or (>= i n) (null? s))
+        '()
+        (cons (car s) (go (+ i 1) (cdr s))))))
 
-(define-type (AList a b) (Listof (Pairof a b)))
+(define (alist . args0)
+  (let loop ([args args0])
+    (cond [(null? args) null]
+          [(null? (cdr args)) (raise-argument-error 'alist "even number of arguments" args0)]
+          [else (let-values ([(a b) (safe-split-at args 2)]) (cons (apply cons a) (loop b)))])))
 
-;;; syntax
+;; returns an identifier from either a symbol or identifier
+(define-syntax (->identifier stx)
+  (let ([x (cadr (syntax->datum stx))])
+    (datum->syntax stx
+                   (if (and (list? x) (equal? 'quote (car x)))
+                       (cadr x)
+                       x))))
 
-;; e.g. ((λcase [c : Integer] [(3) 4] [else (add1 c)]) 3) => 4
-(define-syntax (λcase stx)
-  (let* ([args (cdr (syntax->datum stx))]
-         [v (car args)]
-         [rst (cdr args)])
-    (datum->syntax stx `(λ (,v) (case ,(car v) ,@rst)))))
+;; returns a symbol from either a symbol or identifier
+;; i.e. normalizes symbols or identifiers to a single quote
+;; if you're passing something that is either a symbol or an id
+;; whose referred-to value is a symbol, then the thing itself
+;; evaluates to a symbol, so use it as-as if you want that.
+;; to add a quote to something, do `(quote ,thing)
+(define-syntax (->symbol stx)
+  (let ([x (cadr (syntax->datum stx))])
+    (datum->syntax stx
+                   (if (and (list? x) (equal? 'quote (car x)))
+                       x
+                       `(quote ,x)))))
 
-;; e.g. (? (> 3 4) ? (displayln "hi") (displayln "yo") : "pizza")
-(define-syntax (? stx)
-  (syntax-parse stx #:datum-literals (? :)
-                [(_ cond:expr ? t:expr ... : f:expr ...)
-                 #'(if cond (begin t ...) (begin f ...))]))
+;; TODO: use in-syntax to replace all ()'s.
+;; compose functions from right to left e.g.
+;; ((~> (map (curry + 10)) (cons 20) cdr) (range 4)) = '(30 11 12 13)
+;; ((~> (* 3) (/ () 5)) 10) = 6
+;; NOTE: hole works only in lists used directly in ~> e.g. (~> (map (/ () 3)) add1)
+;; is illegal syntax but (~> (map (~> (/ () 3))) add1) is legal (though cumbersome.)
+(define-syntax (~> stx)
+  (syntax-parse stx
+    [(_ ((~and x (~not ())) ...+)) #'(curry x ...)]
+    [(_ (x ...+))
+     #:with (X ...) (map (λ (s)
+                           (if (null? (syntax-e s))
+                               #'y
+                               s))
+                         (attribute x))
+     #'(λ (y) (X ...))]
+    [(_ x xs ...+) #'(compose1 (~> x) (~> xs ...))]
+    [(_ x) #'x]))
 
-;; e.g. (reduced-let let* binds body)
-;; whatever form of let, but (... () body ...+) becomes (begin body ...+), (... () body) becomes body
-;; useful for macros that accept let binding parameters. makes expanded syntax cleaner.
-(define-syntax (reduced-let stx)
-  (let* ([args (cdr (syntax->datum stx))]
-         [form (car args)]
-         [args (cdr args)])
-    (when (null? (cdr args)) (raise-syntax-error 'reduced-let "you must give a body!"))
-    (datum->syntax stx (if (null? (car args))
-                           (if (null? (cddr args))
-                               (cadr args)
-                               `(begin ,@(cdr args)))
-                           `(,form ,@args)))))
+;; à la clojure
+;; e.g. (if-let ([i "4525"] [c (string->number i)]) (add1 c) 0)
+;; the binds clause is passed to let* and the last-bound
+;; variable (here #'c) is checked for truthiness.
+;; usually if not always the last-bound variable will be in the positive expression.
+;; all the bound vars are in both the positive and negative branches' scopes.
+(define-syntax (if-let stx)
+  (syntax-parse stx [(_ binds pos neg) (with-syntax ([(_ ... [v . _]) #'binds]) #'(let* binds (if v pos neg)))]))
 
-(define-syntax-rule (until x upd) (do () (x (void)) upd))
+;; (uncons-let ([h t xs] binds ...) pos neg) expands to (if (null? xs) neg (let* ([h (car xs)] [t (cdr xs)] binds ...) pos)).
+;; pos should contain h and/or t, and neg must contain neither. xs may be an expression, in which case
+;; it's evaluated only once.
+(define-syntax (uncons-let stx)
+  (syntax-parse stx
+    [(_ ([h t xs] binds ...) pos neg)
+     #'(let ([lstg xs]) (if (null? lstg) neg (let* ([h (car lstg)] [t (cdr lstg)] binds ...) pos)))]))
+
+(define-syntax-rule (or-null xs body ...) (if (null? xs) null (begin body ...)))
+
+;; return first non-null expression, or null if all null
+(define-syntax (or/null stx)
+  (syntax-parse stx
+    [(_) #'null]
+    [(_ x) #'x]
+    [(_ x xs ...+) #'(let ([y x]) (if (null? y) (or/null xs ...) y))]))
+
+(define-syntax (non-null stx)
+  (syntax-parse stx
+    [(_ x:id) #'(if (null? x) (error (format "supposedly non-null expression is null: ~a" #'x)) x)]
+    [(_ x:expr) #'(let ([y x]) (non-null y))]))
+
+;; adds an arrow operator to cond, and allows else to be used anywhere, any number of times;
+;; the first occurence shorts the computation and returns its associated value; anything after
+;; the first else clause isn't even in the expanded expression.
+;; the form [maybe-thing] is equivalent to [maybe-thing => x x]
+;; e.g. (cond/maybe [(and #f 3) => x (add1 x)] [(and #t 1) => x (sub1 x)]) => 0
+(define-macro (cond/maybe . args)
+  (let loop ([rst args])
+    (if (null? rst)
+        '(void)
+        (let* ([clause (car rst)]
+               [with-arrow? (member '=> clause)]) ; somewhy splitf-at (curry equal? '=>) fails
+          (cond [(equal? 'else (car clause)) `(begin ,@(cdr clause))] ; yes, else can short the computation. why not?
+                [(null? (cdr clause)) (let ([x (gensym)]) `(let ([,x ,(car clause)]) (if ,x ,x ,(loop (cdr rst)))))]
+                [with-arrow? `(let ([,(cadr with-arrow?) ,(car clause)])
+                                (if ,(cadr with-arrow?)
+                                    (begin ,@(cddr with-arrow?))
+                                    ,(loop (cdr rst))))]
+                [else `(if ,(car clause) ,(cadr clause) ,(loop (cdr rst)))])))))
+
+;; e.g. (until ([c 0]) (>= c 10) (displayln c) (add1 c))
+(define-syntax-parse-rule (until vars cond a ...+ upd)
+  (let loop vars (unless cond a ... (loop upd))))
+
+;; like `until`
+(define-syntax-parse-rule (while vars cond a ...+ upd)
+  (let loop vars (when cond a ... (loop upd))))
 
 ;; easily define an identifier macro
-(define-syntax-rule (define-syntax:id name expr ...)
+(define-syntax-rule (define-syntax:id name expr ...) ; NOTE: :id is NOT a class! this is syntax-case, not syntax-parse!
   (define-syntax (name stx)
     (syntax-case stx () [name (identifier? #'name) #'(begin expr ...)])))
 
-(define-syntax (thread-λ stx)
-  (datum->syntax stx `(thread (λ () ,@(cdr (syntax->datum stx))))))
+(define-syntax-rule (thread: progn ...) (thread (λ () progn ...)))
 
-;; to disambiguate against consing a thing onto a list
-(: pair (∀ (a b) (-> a b (Pairof a b))))
-(define pair cons)
+#|
+(no-pass-init-field [id : type] ...)
+init-field but never relates subclass' constructor to superclass'.
+allows subclasses to accept parameters of the same name as parent's,
+passing functions of those parameters to the parent constructor, e.g.
 
-(: ∞ (∀ (a) (-> (-> a) a)))
-(define (∞ f) (f) (∞ f))
+(class (class object% (super-new)
+         (no-pass-init-field x y))
+  (init x y)
+  (super-new [x (add1 (or (string->number x) 0))] [y (or y 0)]))
+|#
+;; TODO: remove typing
+#;(define-macro (no-pass-init-field . args)
+  (let ((inits-and-fields (for/list ([arg args])
+                            (let ([gs (gensym)]
+                                  [id (car arg)]
+                                  [type (caddr arg)])
+                              (cons (list (list gs id) ': type)
+                                 (list id ': type gs))))))
+    `(begin (init ,@(map car inits-and-fields))
+            (field ,@(map cdr inits-and-fields)))))
 
-;; like (hash), but produces an list rather than a hashmap
-;; (alist 20 24 'hello 'there (+ 1 2) 'is3) => '((20 . 24) (hello . there) (3 . is3))
-;; NOTE: you'll get better type mismatch errors if you use (list (cons ...) ...) instead of alist
-(define-syntax (alist stx)
-  (let loop
-      ;; we can't merely set k to #f on
-      ;; every other iteration in order to determine
-      ;; which of key or value we're iterating on, b/c
-      ;; #f is a valid key!
-      ([i 0]
-       [k #f] ;; buffer
-       [alst null]  ;; accumulator
-       [args (cdr (syntax->datum stx))])
-    (cond
-      [(null? args) (datum->syntax stx `(reverse (list ,@alst)))]
-      [(even? i) (loop (add1 i) (car args) alst (cdr args))]
-      [else (loop (add1 i) #f (cons `(cons ,k ,(car args)) alst) (cdr args))])))
-
-#| (cons-id&val-if-truthy T alist id ...)
-   produces (AList Symbol T). T must be the union of all the id's types. you're required to specify it because cons-id&val-if-truthy expands to a foldr, and we need to specify its inner lambda's types.
-   for each id, if its value is truthy, then the pair of the identifier-as-a-symbol and the identifier's value is (purely) consed into alist.
-
-example:
-   (let ([x #f] [y : Integer 4] [z : "hi"])
-     (cons-id&val-if-truthy (U String Integer) null x y z))
+#| (cons-id&val-if-truthy alist0 id ...)
+   produces an alist. for each id, if its value is truthy, then the pair of the identifier-as-a-symbol and the identifier's value is (purely) consed into alist e.g.
+   (let ([x #f] [y 4] [z "hi"])
+     (cons-id&val-if-truthy null x y z))
    => '((y . 4) (z . "hi"))
 |#
 (define-syntax (cons-id&val-if-truthy stx)
-  (let* ([args (cdr (syntax->list stx))]
-         [T (car args)]
-         [alist (cadr args)]
-         [ks (map (λ (id) `(cons ',id ,id)) (cddr args))])
-    (datum->syntax
-     stx
-     `(foldr (λ ([p : (Pairof Symbol (Option ,T))]
-                 [acc : (AList Symbol ,T)])
-               (if (cdr p) (cons p acc) acc))
-             ,alist
-             (list ,@ks)))))
+  (syntax-parse stx
+    [(_ alist k ...) #'(foldr (λ (p acc) (if (cdr p) (cons p acc) acc))
+                              alist
+                              (list (cons (quote k) k) ...))]))
 
-;;; miscellaneous functions
+;; print first cause of failure in an `and` form
+;; if first arg is #t; if first arg is #f then it's ordinary `and`.
+(define-syntax (and/print-fail-when stx)
+  (syntax-parse stx
+    [(_ switch [reason e] ...)
+     (if (syntax-local-eval #'switch)
+         #'(and (let ([s e]) (or s (begin (printf "fail: ~a~n" reason) #f))) ...)
+         #'(and e ...))]))
 
-;; à la haskell
-(: die (->* (String) (Integer) Void))
+;; output's a little dirty; may print an unnecessary trailing newline. lines after first are indented by one space.
+(define-macro (print-vars . args)
+  `(printf ,(string-append
+             (string-join
+              (for/list ([v args] [k (in-naturals 1)])
+                (string-append (symbol->string v) ": ~a" (if (= 0 (modulo k 3)) "~n" " "))))
+             "~n") ,@args))
+
+;; (pret name expr opt-func)
+(define-macro (pret . args)
+  (let ([g (gensym)] [f (if (null? (cddr args)) #f (caddr args))])
+    `(let ([,g ,(cadr args)]) (printf "~a: ~a~n" ,(car args) ,(if f `(,f ,g) g)) ,g)))
+
+(define (list->maybe xs) (if (null? xs) #f (car xs)))
+(define (maybe->list m) (if m (list m) null))
+(define ((on bin un) a b) (bin (un a) (un b)))
+
+#| with loop variables, iterate through a sequence, updating the variables while returning a sequence.
+   also, if you've already used sequence-generate, then you can pass those instead of a sequence, e.g.
+   (let-values ([(more? next) (sequence-generate _)]) (fold/sequence _ _ ([(z) (more? next)]) _))
+  e.g.
+(for ([(i s) (fold/sequence (Integer String)
+                            ([x : String "boom"] [y : Integer 0])
+                            ([(z) (in-range 4)])
+                            (values
+                             ;; updated loop vars
+                             (string-append x (if (even? y) " boom" " bap")) (add1 y)
+                             ;; sequence element values
+                             (if (< y 3) y (error "nlt"))
+                             x))]
+      #:final (= i 2))
+  (printf "~a & ~a~n" i s))
+prints
+0 & boom
+1 & boom boom
+2 & boom boom bap
+|#
+#;(define-syntax (fold/sequence stx)
+  (syntax-parse stx #:literals (values) #:datum-literals (:)
+                [(_ (~describe "output sequence types" (stype ...+)) vs ([(x ...+) xs]) ; TODO: make bad syntax messages better! currently ([x '(1 2 3)]) just says "bad syntax" instead of "expected (x), given x"
+                    body ...+) ; TODO: support binding from multiple sequences. this is not much new functionality as we can already have in-sequences
+                 #:with ([v:id : vtype v0] ...+) #'vs
+                 #:with (e ...) (generate-temporaries #'(stype ...))
+                 #:with (spos ...) (map (λ (n) (datum->syntax stx n)) (range (length (syntax->list #'(stype ...)))))
+                 #:with (vpos ...) (map (λ (n) (datum->syntax stx n)) (range (length (syntax->list #'vs))))
+                 #:with seq-expr (syntax-parse #'xs [(more?:id next:id) #'(values more? next)] [xs #'(sequence-generate xs)])
+                 #'(let-values ([(more? next) seq-expr])
+                     (if (more?)
+                         ;; first iteration is special: it's needed to initialize the rets vector, since we can't create an empty vector unless we fill it with elemeents. because the types are not known beforehand, we cannot know dummy values.
+                         (let*-values ([(x ...) (next)]
+                                       [([v : vtype] ...) (values v0 ...)] ; bound for body
+                                       [([v : vtype] ... [e : stype] ...) (begin body ...)]
+                                       [([loop-vars : (Mutable-Vector vtype ...)]) (vector v ...)]
+                                       [([rets : (Mutable-Vector stype ...)]) (vector e ...)])
+                           ((inst make-do-sequence Void stype ...)
+                            (λ _ (values (λ _ (values (vector-ref rets spos) ...))
+                                         (λ _ (let*-values ([(x ...) (next)]
+                                                            [([v : vtype] ...) (values (vector-ref loop-vars vpos) ...)]
+                                                            [([v : vtype] ... [e : stype] ...) (begin body ...)])
+                                                (vector-set! loop-vars vpos v) ...
+                                                (vector-set! rets spos e) ...))
+                                         (void)
+                                         #f
+                                         #f
+                                         (λ _ (more?)))))) ; TODO: support #:break
+                         (inst empty-sequence stype ...)))]))
+
+;; e.g. ((λcase c [(3) 4] [else (add1 c)]) 3) => 4
+(define-syntax (λcase stx)
+  (syntax-parse stx [(_ var:id . rst) #'(λ (var) (case var . rst))]))
+
+;; TODO: the ideal definition, using syntax-parse or syntax-case
+;; e.g. (cond/maybe [(and #f 3) => x (add1 x)] [(and #t 1) => x (sub1 x)]) => 0
+#;(define-syntax (cond/maybe stx)
+  (syntax-case stx (=>)
+    [(_ clause ...)
+     (let loop ([clauses (syntax->list #'(clause ...))])
+       (if (null? clauses)
+           null
+           #`(let ([x (car clauses)]))))]))
+
+;; e.g. (? (> 3 4) (displayln "hi") (displayln "yo") : "pizza")
+(define-syntax (? stx)
+  (syntax-parse stx
+                [(_ cond:expr t:expr ... : f:expr ...) ; syntax-case can't handle this pattern; it complains about successive rest patterns
+                 #'(if cond (begin t ...) (begin f ...))]))
+
+;;; miscellaneous basic functions
+
+(define (fmap/maybe f m) (and m (f m)))
+(define ((fmap/maybe/curry f) m) (and m (f m)))
 (define (die s [ec 1]) (displayln s (current-error-port)) (exit ec))
+
+;; usually used like (∞ (λ () ...))
+(define (∞ f) (f) (∞ f)) ;; wrapping f-in-the-body in λ, i.e. (define (∞ f) (λ () (f)) (∞ f)), is NOT an alternative to wrapping f-as-a-parameter in λ! wrapping in the body will cause non-termination.
 
 ;;; filesystem
 
-(: read-file-into-string (-> Path-String String))
-(define (read-file-into-string path) (call-with-input-file path port->string))
-
-(: read-from-process (-> String String))
+;; (: read-from-process (-> String String))
 (define (read-from-process p)
-  ;; process/ports has a complex case-> type. run (:query-type/args process/ports #f #f #f String) in the typed racket repl for details
   (match (process/ports #f #f #f p)
     [(list source sink _pid err ask)
      (ask 'wait)
-     (let ([source (cast source Input-Port)]
-           [sink (cast sink Output-Port)]
-           [err (cast err Input-Port)])
-       (begin0 (port->string source)
+     (begin0 (port->string source)
          (close-input-port source)
          (close-output-port sink)
-         (close-input-port err)))]))
+         (close-input-port err))]))
 
-;; mkdir -p.
-(: make-directory-rec (-> Path-String Void))
-(define (make-directory-rec p)
-  (let* ([separator "/"] ;; TODO: get this through automated means
-         [p (if (string? p) p (path->string p))]
-         [segments (string-split p "/")]
-         [absolute? (string-prefix? p separator)])
-    (let ([final-dir ((inst foldl String String)
-                      (λ ([segment : String] [path-string : String])
-                        (let ([ps (string->path path-string)])
-                          (unless (directory-exists? ps) (make-directory ps))
-                          (string-append path-string separator segment)))
-                      (if absolute? (string-append separator (car segments)) (car segments))
-                      (cdr segments))])
-      (unless (directory-exists? final-dir)
-        (make-directory final-dir)))))
+;;; iterators & sequences
 
-;; format a real as a dollar amount
-(: $ (-> Real String))
-(define ($ n)
-  (let* ([strs (string-split (number->string n) ".")]
-         [non-decimal : (Listof Char) (string->list (car strs))]
-         [decimals (if (= 2 (length strs))
-                       (let* ([s1 (cadr strs)]
-                              [s1l (string-length s1)]
-                              [y (min s1l 2)])
-                         (string-append "." (substring s1 0 y) (make-string (- 2 y) #\0)))
-                       "")])
-    (string-append "$"
-     (list->string (cdr (foldr (λ ([a : Char] [cb : (Pairof Natural (Listof Char))])
-                                 (let ([c (car cb)]
-                                       [b (cdr cb)])
-                                   (pair
-                                    (add1 c)
-                                    (cons a (if (= 0 (modulo c 3))
-                                                (cons #\, b)
-                                                b)))))
-                                 (pair (ann 1 Natural) (list (car non-decimal)))
-                               (cdr non-decimal))))
-     decimals)))
+;; (: sequence-last (∀ (a ...) (-> (Sequenceof a ... a) (Option (List a ... a)))))
+(define (sequence-last s)
+  (let-values ([(more? next) (sequence-generate (in-values-sequence s))])
+    (let rec ([ret #f]) (if (more?) (rec (next)) ret))))
 
-(: percent-change (-> Real Real Real))
-(define (percent-change a b) (/ (* 100 (- b a)) a))
+;; (: sequence-take (∀ (a) (-> Natural (Sequenceof a) (Listof a))))
+(define (sequence-take n s)
+  (let-values ([(more? next) (sequence-generate s)])
+    (let rec ([k 0])
+      (if (and (< k n) (more?))
+          (cons (next) (rec (add1 k)))
+          null))))
 
-;;; iterators/sequences
+;; check the first output for proper length
+;; (: sequence-split-at (∀ (a) (-> Natural (Sequenceof a) (Values (Listof a) (-> Boolean) (-> a)))))
+(define (sequence-split-at n s)
+  (let-values ([(more? next) (sequence-generate s)])
+    (values (let rec ([k 0])
+                 (if (and (< k n) (more?))
+                     (cons (next) (rec (add1 k)))
+                     null))
+            more? next)))
 
-;; reverse? means that each list in the iteration is reversed:
-;; (sequence->list (in-inits '(1 2 3) #:reverse? #t)) => ((1) (2 1) (3 2 1))
-;; less computation when reverse? is #t
-;; TODO: refactor into using closures rather than mutation. update in-inits/vector, too.
-(: in-inits (All (a) (-> (Listof a) [#:reverse? Boolean] (Sequenceof (Listof a)))))
-(define (in-inits xs #:reverse? [reverse? #f])
-  (let ([iter : (Listof a) xs]
-        [left : (Listof a) null])
-    (in-producer
-     (λ ()
-       (if (null? iter)
-           null
-           (let ([leftp (cons (car iter) left)])
-             (set! iter (cdr iter))
-             (set! left leftp)
-             (if reverse? leftp (reverse leftp)))))
-     null?)))
+(define (sequence-argmin <= f s)
+  (let*-values ([(a) (sequence-ref s 0)]
+                [(m _) (for/fold ([ex a] [e (f a)]) ([x (sequence-tail s 1)])
+                         (let ([y (f x)])
+                           (if (<= y e)
+                               (values x y)
+                               (values ex e))))])
+    m))
 
-;; uses a ring buffer to produce vectors of length len (or less, before the ring buffer is filled)
-;; you need to supply a dummy value for a, to fill the ring buffer with that value for its initial (n - 1) values
-(: in-inits/vector (All (a) (-> Natural a (Listof a) (Sequenceof (Vectorof a)))))
-(define (in-inits/vector len init-val xs)
-  (let ([iter : (Listof a) xs]
-        [left : (RingBuffer a) (make-ring-buffer len init-val)]
-        [done? : Boolean #f])
-    ((inst in-producer (Vectorof a))
-     (λ ()
-       (if (null? iter)
-           (begin (set! done? #t) (ring-buffer->vector left))
-           (begin (ring-buffer-push! (car iter) left)
-                  (set! iter (cdr iter))
-                  (ring-buffer->vector left))))
-     (λ ([_ : (Vectorof a)]) done?))))
+;; like in-parallel except combines values rather than sequences
+#;(: sequence-comb (∀ (a b ...) (-> (Sequenceof a) (-> (Sequenceof a) b) ... b (Values b ... b))))
+#;(define (sequenceof s . fs)
+  (let-values ([(more? next) (sequence-generate s)])
+    (if (more?)
+        _
+        (values _ ...))))
+
+;; adapted from haskell's prelude for this strict language
+;; the element that first matches the predicate is not in
+;; the resultant list.
+;; e.g. (iterate-until (curry = 10) add1 0) is
+;; effectively equal to (range 10)
+;; (: iterate-until (∀ (a) (-> (-> a Boolean) (-> a a) a (Listof a))))
+(define (iterate-until p f x) (let rec ([x x]) (if (p x) null (cons x (rec (f x))))))
+
+#| uncons from list of lists as though the list were flat.
+assumes that the input list contains to null elements.
+loop example (effectively (for-each displayln (range 2 10))):
+(let loop ([xs '((2 3 4) (5 6 7) (8 9))])
+  (let ([p (uncons-xss xs)])
+    (when p (displayln (car p)) (loop (cdr p)))))
+|#
+;; (: uncons-xss (∀ (a) (-> (Listof (Listof a)) (Option (Pairof a (Listof (Listof a)))))))
+(define (uncons-xss xss) (cond [(null? xss) #f]
+                               [(null? (car xss)) #f]
+                               [else (let ([ε (car xss)])
+                                       (cons (car ε) (if (null? (cdr ε))
+                                                         (cdr xss)
+                                                         (cons (cdr ε) (cdr xss)))))]))
+
+;; break an interval [a,z] into segments each n long, except the last
+;; which may be less than n.
+;; you may specify an increment to space the intervals apart, e.g.
+;; (break-interval/chunks-of 2 0 10) => '((0 . 2) (2 . 4)) but
+;; (break-interval/chunks-of 2 0 10 1) => '((0 . 2) (3 . 5)).
+;; negative increments are allowed.
+;; (: break-interval/chunks-of (->* (Nonnegative-Integer Real Real) (Real) (Listof (Pairof Real Real))))
+(define (break-interval/chunks-of n a z [inc 0])
+  (let loop ([k a]) (if (<= k z) (cons (cons k (min z (+ k n))) (loop (+ k n inc))) null)))
+
+#| break an interval into no more than n chunks. note the following edge case examples:
+   (break-interval/n-chunks 8 1 50 1)
+     => '((1 . 7) (8 . 14) (15 . 21) (22 . 28) (29 . 35) (36 . 42) (43 . 49) (50 . 50))
+   or (break-interval/n-chunks 8 1 50 1)
+     => '((1 . 7) (8 . 14) (15 . 21) (22 . 28) (29 . 35) (36 . 42) (43 . 49))
+|#
+;; (: break-interval/n-chunks (->* (Nonnegative-Integer Real Real) (Real) (Listof (Pairof Real Real))))
+(define (break-interval/n-chunks n a z [inc 0]) (break-interval/chunks-of (exact-floor (abs (/ (- z a) n))) a z inc))
+
+;; e.g. (sequence->list (sequence-map sequence->list (in-inits (in-range 5))))
+;; => '((0) (0 1) (0 1 2) (0 1 2 3) (0 1 2 3 4))
+;; (: in-inits (∀ (a) (-> (Sequenceof a) (Sequenceof (Sequenceof a)))))
+#;(define (in-inits s)
+  (fold/sequence ((Sequenceof a)) ([left : (Sequenceof a) empty-sequence]) ([(x) s])
+                 (let ([y (sequence-append left (in-value x))]) (values y y))))
+
+;; monomorphic in-dict
+(define (in-alist xs)
+  (make-do-sequence
+   (λ () (values (λ (xs) (let ([p (car xs)]) (values (car p) (cdr p))))
+                 cdr xs (compose1 not null?) #f #f))))
+
+;; (: in-avec (∀ (a b) (-> (AVec a b) (Sequenceof a b))))
+(define (in-avec v)
+  (let ([vlen (vector-length v)])
+    (make-do-sequence
+     (λ () (values (λ (pos) (let ([p (vector-ref v pos)]) (values (car p) (cdr p))))
+                   add1 0 (λ (pos) (< pos vlen)) #f #f)))))
 
 ;;; string transforms, formatting, and searching
 
+;; format a real as a dollar amount (adds dollar sign, commas, and rounds to 2 decimals)
+;; (: $ (-> Real String))
+(define ($ n)
+  (match (real->decimal-string n 2)
+    [(regexp #rx"([0-9]*)[.]([0-9]+)" (list _
+                                            (app (λ (s) (string->list s)) non-decimal)
+                                            decimals))
+     (string-append "$" (list->string (let loop ([c 1]
+                                                 [acc null]
+                                                 [rst (reverse non-decimal)])
+                                        (if (null? rst)
+                                            (if (char=? #\, (car acc)) (cdr acc) acc)
+                                            (loop (add1 c)
+                                                  (if (= 0 (modulo c 3))
+                                                      (list* #\, (car rst) acc)
+                                                      (cons (car rst) acc))
+                                                  (cdr rst)))))
+                    "." decimals)]))
+
 ;; split an input stream into lines each of which is no more than a given length
-(: split-at-every (-> Natural Input-Port (Listof String)))
+;; (: split-at-every (-> Natural Input-Port (Listof String)))
 (define (split-at-every i p)
-  (reverse
-   (let loop ([acc : (Listof String) null])
-     (let ([x (read-string i p)])
-       (if (eof-object? x)
-           acc
-           (loop (cons x acc)))))))
+  (let loop ()
+    (let ([x (read-string i p)])
+      (if (eof-object? x)
+          null
+          (cons x (loop))))))
 
 ;; split a string into lines each of which is no more than a given length,
 ;; and split at word boundaries.
-(: split-string-at-every/word-boundary (-> Natural String (Listof String)))
+;; (: split-string-at-every/word-boundary (-> Natural String (Listof String)))
 (define (split-string-at-every/word-boundary l s)
   (let ([ws (string-split s)])
-    (let loop ([cur-line-str : String (car ws)]
-               [ws : (Listof String) (cdr ws)]
-               [acc : (Listof String) null])
+    (let loop ([cur-line-str (car ws)]
+               [ws (cdr ws)]
+               [acc null])
       (if (null? ws)
           (reverse (cons cur-line-str acc))
           (let ([w (car ws)])
@@ -262,27 +462,21 @@ example:
 
 ;; if pred is a predicate, then that function is used; if instead pred is a character, equality with that character is used
 ;; you could use regexp-match or (list->string (sequence->list stop-before str pred)), but this is probably faster
-(: take-until/string (-> (U Char (-> Char Any)) String String))
+;; (: take-until/string (-> (U Char (-> Char Any)) String String))
 (define (take-until/string pred str)
-  (let ([stop? : Boolean #f]
+  (let ([stop? #f]
         [pred (if (char? pred) (curry char=? pred) pred)])
-    (string-fold (λ ([c : Char] [s : String])
+    (string-fold (λ (c s)
                    (cond [stop? s]
                          [(pred c) (set! stop? #t) s]
                          [else (string-append s (string c))]))
                  "" str)))
 
-(define (percent-change-str [a : Real] [b : Real] [target : (U Real #f) #f]) : String
-  (let ([chg (percent-change a b)])
-    (if (positive? chg)
-        (format "+~a%" (real->decimal-string chg 2))
-        (format  "~a%" (real->decimal-string chg 2)))))
-
 ;; also truncates decimals to 2 places, for particular convenience for this stock-portions
-;; program, since doing so happens to be appropriate since we're using thousandComma only for dollar figures
-(: thousandComma (-> Real String))
-(define (thousandComma n)
-  (let* ([strs (string-split (number->string n) ".")]
+;; program, since doing so happens to be appropriate since we're using thousand-comma only for dollar figures
+;; (: thousand-comma (-> (U String Real) String))
+(define (thousand-comma n)
+  (let* ([strs (string-split (if (string? n) n (number->string n)) ".")]
          [non-decimal (car strs)]
          [decimals (if (= 2 (length strs))
                        (let ([s1 (cadr strs)])
@@ -290,26 +484,84 @@ example:
                        "")])
     (string-append
      (list->string (let ([c -1])
-                     (foldr (λ ([a : Char] [b : (Listof Char)])
+                     (foldr (λ (a b)
                               (set! c (+ 1 c))
                               (if (and (not (= c 0)) (= 0 (modulo c 3)))
                                   (cons a (cons #\, b))
                                   (cons a b)))
-                            (ann null (Listof Char))
+                            null
                             (string->list non-decimal))))
      decimals)))
 
 ;; scraps trailing ".0" if present
-(: trim-useless-point-0 (-> String String))
-(define (trim-useless-point-0 s)
-  (if (string-suffix? s ".0")
-      (substring s 0 (- (string-length s) 2))
-      s))
+;; (: trim-useless-point-0 (-> String String))
+(define (trim-useless-point-0 s) (if (string-suffix? s ".0") (substring s 0 (- (string-length s) 2)) s))
+
+;; (trunc-or-pad i s) truncates s to i if i is less than or equal to s' length.
+;; if i is greater than s' length, then s is padded with the given character.
+;; (: trunc-or-pad (->* (Natural String) (Char) String))
+(define (trunc-or-pad i s [c #\space])
+  (let ([sl (string-length s)])
+    (if (> i sl)
+        (string-append s (make-string (- i sl) c))
+        (substring s 0 i))))
+
+;; O(mn) for an m × n table. assumes that all rows are equal length
+;; (: longest-cells-per-column (∀ (a) (-> (-> a Natural) (Listof (Listof a)) (Listof Natural))))
+(define (longest-cells-per-column len-fn rows)
+  (for/foldr ([maxes (make-list (length (car rows)) 0)]) ([r rows])
+             (map max maxes (map len-fn r))))
+
+;; calculating column widths is a fairly expensive operation; you can specify a list of column widths to reduce amount of computation.
+;; if you specify a column size list, then strings longer than their column's width are truncated
+;; specifying #f for column width will auto-calculate it
+;; setting #:col-widths to #f makes function much more efficient than than passing #:col-widths (make-list num-cols #f)!
+;; remember that you can (let ([ws (longest-cells-per-column tbl)]) (pad-table-cells tbl #:col-widths ws))
+#;(: pad-table-cells (->* ((NonEmpty (Listof String)))
+                        (Char #:col-widths (Option (Listof Natural)))
+                        (Listof (Listof String))))
+(define (pad-table-cells rows [pad-char #\space] #:col-widths [col-widths #f])
+  (map (λ (r)
+         (if col-widths
+             ;; not using for/fold b/c that expands into a left fold
+             (foldr (λ (cell col-width acc) (cons (trunc-or-pad col-width cell) acc)) null r col-widths)
+             (foldr (λ (cell col-width acc)
+                      ;; auto-derived col sizes never truncate, so we're exclusively padding here
+                      (cons (string-append cell (make-string (- col-width (string-length cell)) pad-char)) acc))
+                    null
+                    r
+                    (longest-cells-per-column string-length rows))))
+       rows))
+
+;; NOTE: will fail with error if not all rows have equal length
+#;(: pretty-table-str (-> (NonEmpty (Listof String))
+                       [#:col-widths (Option (Listof Natural))]
+                       [#:padding Natural]
+                       [#:padding-char Char]
+                       String))
+(define (pretty-table-str rows
+                          #:col-widths [col-widths #f]
+                          #:padding [padding 2]
+                          #:padding-char [pc #\space])
+  (string-join (map (λ (row-cells) ; turn a list of cells into a printable line
+                      (string-join row-cells (make-string padding pc)))
+                    (pad-table-cells rows #:col-widths col-widths)) ; list of rows
+               "\n"))
+
+;; (: display-hash-tables (-> (NonEmpty HashTableTop) Void))
+(define (display-hash-tables hs) (displayln (pretty-table-str (hash-tables->table hs))))
+
+;; (: hash-tables->table (-> (NonEmpty HashTableTop) (NonEmpty (Listof String))))
+(define (hash-tables->table hs)
+  ;; this double-sorting can be only one by using an alist
+  (let ([fs (sort (hash-keys (car hs)) string<? #:key ~a)])
+    (cons (sort (map ~a fs) string<?)
+          (map (λ (h) (for/list ([f fs]) (~a (hash-ref h f)))) hs))))
 
 ;; breaks s by lines, then returns list of lines that match the given regex
 ;; TODO: make return list of exprs from regex parens
-(: grep (->* ((U String Regexp)) ((U Input-Port String) #:first-only? Boolean) (Listof String)))
-(define (grep regex [s (current-input-port)] #:first-only? [first-only? #f])
+;; (: grep (->* ((U String Regexp)) ((U Input-Port String) #:first-only? Boolean) (Listof String)))
+#;(define (grep regex [s (current-input-port)] #:first-only? [first-only? #f])
   (let ([in (if (string? s) (open-input-string s) s)])
     (let loop ()
       (let ([l (read-line in)])
@@ -317,8 +569,8 @@ example:
               [(regexp-match? regex l) (if first-only? (list l) (cons l (loop)))]
               [else (loop)])))))
 
-(: grep-process (-> (U String Regexp) String [#:first-only? Boolean] (Listof String)))
-(define (grep-process regex process-str #:first-only? [fo? #f])
+#;(: grep-process (-> (U String Regexp) String [#:first-only? Boolean] (Listof String)))
+#;(define (grep-process regex process-str #:first-only? [fo? #f])
   (let* ([ps (process process-str)]
          [inp (car ps)]
          ;; unused ports, but bound b/c we need to close them:
@@ -330,12 +582,12 @@ example:
       (close-output-port outp))))
 
 ;; function seems to work, though racket says that it can't find either the tempfile (source) or original file (dest) -- assumedly only one of the two
-(: replace-matching-lines-in-file (-> (-> String Boolean) (-> String (Option String)) Path-String [#:first-only? Boolean] Void))
-(define (replace-matching-lines-in-file pred endo path #:first-only? [fo? #f])
-  ((inst with-input-from-file Void)
+#;(: replace-matching-lines-in-file (-> (-> String Boolean) (-> String (Option String)) Path-String [#:first-only? Boolean] Void))
+#;(define (replace-matching-lines-in-file pred endo path #:first-only? [fo? #f])
+  (with-input-from-file
    path
    (λ () (let ([tmpfp (make-temporary-file "rkttmp~a" #f (current-directory))]) ;; can't create in /var/tmp in nixos, i suppose.
-           ((inst with-output-to-file Void)
+           (with-output-to-file
             tmpfp
             (λ ()
               (let → : Void ()
@@ -351,26 +603,567 @@ example:
                   )))
             #:exists 'truncate #:mode 'text)))))
 
-;;; lists
+;;; lists, vectors, and combinatronics
 
-;; for a list xs of length n:
-;; if m <= n: (take m xs)
-;; else #false
-;; runtime complexity: O(m)
-(: safe-take (∀ (a) (->* (Natural (Listof a)) (Boolean) (Option (Listof a)))))
-(define (safe-take m xs [no-more-than? #f])
-  (define flag : Boolean #f)
-  (let ([xs0
-         (let loop : (Listof a)
-              ([count : Natural 0]
-               [xs xs])
-              (if (< count m)
-                  (if (null? xs)
-                      (begin (set! flag #t) null) ;; set! called only once. makes algo more efficient.
-                      (cons (car xs)
-                            (loop (add1 count) (cdr xs))))
-                  null))])
-    (if flag (if no-more-than? xs #f) xs0)))
+#| lookup an element (first occurence only) in a vector, and, if found, replace it by an updated version.
+   works only on mutable vectors
+   example:
+(define v : (Vectorof Integer) (vector 1 0 2))
+(define (update-v) (vector-update! (λ ([k : Integer]) (and (even? k) (add1 k))) v))
+(update-v) ; v is now #(1 1 2)
+(update-v) ; v is now #(1 1 3)
+(update-v) ; v is still #(1 1 3)
+|#
+;; (: vector-update! (∀ (a) (-> (-> a (Option a)) (Mutable-Vectorof a) Void)))
+(define (vector-update! f v)
+  (let ([len (vector-length v)])
+    (let loop ([pos 0])
+      (when (< pos len)
+        (if-let ([new-val (f (vector-ref v pos))])
+                (vector-set! v pos new-val)
+                (loop (add1 pos)))))))
 
-;; if (length xs) < m, xs is returned; else (take n xs). O(m)
-(define-syntax-rule (take-no-more-than m xs) (safe-take m xs #t))
+;; (: vector-setf*! (∀ (a) (-> (Mutable-Vectorof a) (-> a a) * Void)))
+(define (vector-setf*! v . fs)
+  (let loop ([pos 0] [fs fs])
+    (if (null? fs)
+        (void)
+        (begin (vector-set! v pos ((car fs) (vector-ref v pos)))
+               (loop (add1 pos) (cdr fs))))))
+
+;; index of first element matching a predicate
+;; (: vector-findf/pos (∀ (a) (-> (-> a Boolean) (Vectorof a) (Option Integer))))
+(define (vector-findf/pos p v)
+  (let ([len (vector-length v)])
+    (let loop ([pos 0])
+      (and (< pos len) (let ([curval (vector-ref v pos)]) (if (p curval) pos (loop (add1 pos))))))))
+
+(define (vector-last v) (vector-ref v (sub1 (vector-length v))))
+(define (vector-first v) (vector-ref v 0))
+
+;; TODO: use arrays if no faster. check.
+;; (: in-vector-from-right (∀ (a) (-> (Vectorof a) (Sequenceof a))))
+(define (in-vector-from-right v) (in-interval/reverse v vector-ref -1 (sub1 (vector-length v))))
+
+#| vector-copy that supports negative indices à la python, except that
+   if the start is less than the end then elements are reversed, e.g.
+   in python range(10)[-1,4] is empty, but here it's #(8 7 6 5 4), unless
+   #:python-compat? #t (it's otherwise equal to python slices already.)
+   (vector-slice v -1 0) returns v reversed, but missing its last element, e.g.
+   (vector-slice (list->vector (range 10)) -1 0) => #(8 7 6 5 4 3 2 1 0).
+
+   TIP: the slice [-n:] gets the last n elements.
+   NOTE: vector-copy or vector-ref throws error if invalid indices are provided, including predicates that no elements match.
+   example of #:include-right-match?:
+   (vector-slice #(1 2 2.5 5 6) 0 (λ (x) (= x 5)) #:include-right-match? #t)
+   returns #(1 2 2.5 5) whereas without the flag it'd not include 5.
+|#
+#;(: vector-slice (∀ (a) (->* ((Vectorof a)) ((U (-> a Boolean) Integer)
+                                            (U (-> a Boolean) Integer)
+                                            #:python-compat? Boolean
+                                            #:include-right-match? Boolean) ; used only if end is predicate
+                            (Vectorof a))))
+(define (vector-slice v [a 0] [z (vector-length v)] #:python-compat? [py? #f] #:include-right-match? [wrm? #f])
+  (let ([ma (if (exact-integer? a)
+                (if (negative? a) (+ (vector-length v) a) a)
+                (or (vector-findf/pos a v)
+                    (error "vector-slice: invalid slice start predicate")))]
+        [mz (if (exact-integer? z)
+                (if (negative? z) (+ (vector-length v) z) z)
+                (+ (if wrm? 1 0)
+                   (or (vector-findf/pos z v)
+                       (error "vector-slice: invalid slice end predicate"))))])
+    (if (> ma mz)
+        (if py? #() (build-vector (- ma mz) (λ (i) (vector-ref v (- ma i 1)))))
+        (vector-copy v ma mz))))
+
+;; where interval is inclusive on both sides
+;; (: in-interval/reverse (∀ (s a) (-> s (-> s Integer a) Integer Integer (Sequenceof a))))
+(define (in-interval/reverse s f a z) (make-do-sequence (λ () (values (curry f s) sub1 z (curry < a) #f #f))))
+
+;; more efficient version of (in-vector (vector-slice v a b))
+;; (: in-vector-on (∀ (a) (->* ((Vectorof a)) (Integer Integer #:python-compat? Boolean) (Sequenceof a))))
+(define (in-vector-on v [a 0] [z (vector-length v)] #:python-compat? [py? #f])
+  (let ([ma (if (negative? a) (+ (vector-length v) a) a)] [mz (if (negative? z) (+ (vector-length v) z) z)])
+    (if (> ma mz)
+        (if py? empty-sequence (in-interval/reverse v vector-ref (sub1 mz) (sub1 ma)))
+        (in-interval v vector-ref ma mz))))
+
+;; needs to be its own function because racket doesn't support monoids Monoid m n => (m,n), nor monoids Last & (+1)
+;; (: len&last (∀ (a) (-> (Listof a) (Values Positive-Integer a))))
+(define (len&last xs)
+  (if (null? xs)
+      (raise-argument-error 'len&last "non-empty input list" xs)
+      (let loop ([l 1] [rst xs])
+        (if (null? (cdr rst))
+            (values l (car rst))
+            (loop (add1 l) (cdr rst))))))
+
+;; (cons-if-truthy c ... xs) conses truthy elements in c ... onto xs
+;; e.g. (cons-if-truthy null #f 3 #f 4) => '(3 4)
+;; if you want to cons based on a general predicate, you may try
+;; (append (filter p xs) xss ...), but you may need for p to be a pred,
+;; i.e. (-> Any Boolean : t) for some type t.
+;; (: cons-if-truthy (∀ (a) (-> (Listof a) (Option a) * (Listof a))))
+(define (cons-if-truthy z . xs) (foldr (λ (x acc) (if x (cons x acc) acc)) z xs))
+
+;; (filter-truthy xs) is (apply (curry cons-if-truthy null) xs) but faster
+;; (: filter-truthy (∀ (a) (-> (Listof (Option a)) (Listof a))))
+(define (filter-truthy xs) (foldr (λ (x acc) (if x (cons x acc) acc)) null xs))
+
+;; (: filter-map2 (∀ (a b) (-> (-> a (Option b)) (Listof a) (Listof b))))
+(define (filter-map2 f xs) (foldr (λ (x acc) (let ([y (f x)]) (if y (cons y acc) acc))) null xs))
+
+;; (: map-list (∀ (a) (-> (Listof a) (Listof (List a)))))
+;; (define (map-list as) (map list as))
+
+;; produces a list whose first element is a list and whose remaining
+;; elements are not necessarily lists. thus you can still break the
+;; return value of unzip into two lists via car & cdr, but that doesn't
+;; curry correctly. use unzip/list for currying.
+;; (: unzip (∀ (a b) (-> (AList a b) (Pairof (Listof a) (Listof b)))))
+(define (unzip ps) (let-values ([(x y) (unzip/values ps)]) (cons x y)))
+
+;; (: unzip/values (∀ (a b) (-> (AList a b) (Values (Listof a) (Listof b)))))
+(define (unzip/values ps) (for/foldr ([as null] [bs null]) ([p ps]) (values (cons (car p) as) (cons (cdr p) bs))))
+
+;; useful for currying, e.g:
+;; (define (f [xs : (Listof Real)] [ys : (Listof Real)]) (/ (apply + xs) (apply + ys)))
+;; (apply f (unzip/list '((1 . 4) (2 . 5) (3 . 6)))) ==> 2/5
+;; (: unzip/list (∀ (a b) (-> (AList a b) (List (Listof a) (Listof b)))))
+(define (unzip/list ps) (let ([x (unzip ps)]) (list (car x) (cdr x))))
+
+;; pass even? or odd? as the predicate
+;; (: every-other (∀ (a) (-> (-> Integer Boolean) (Listof a) (Listof a))))
+(define (every-other p xs) (for/list ([x xs] [k (in-naturals)] #:when (p k)) x))
+
+;; given xs & ys (of equal length), produce (list x₀ y₀ x₁ y₁ ...)
+;; to interleave lists of varying lengths while ensuring an ordering,
+;; just append then sort them.
+;; (: interleave (∀ (a) (-> (Listof a) (Listof a) (Listof a))))
+(define (interleave xs ys) (foldr (λ (x y acc) (cons x (cons y acc))) null xs ys))
+
+#| split at m if list has at least m elements; else the 1st of values is the input list, and the 2nd is null.
+   e.g. (safe-split-at (range 7) 5) => (values '(0 1 2 3 4) '(5 6))
+        (safe-split-at (range 7) 7) => (values '(0 1 2 3 4 5 6) '())
+   unlike split-at, accepts any real, including +inf.0, as the length.
+|#
+;; (: safe-split-at (∀ (a) (-> (Listof a) Real (Values (Listof a) (Listof a)))))
+(define (safe-split-at xs0 m)
+  (let loop
+       ([count 0] [acc null] [xs xs0])
+       (if (or (null? xs) (>= count m))
+           (values null xs)
+           (let-values ([(sp rst) (loop (add1 count) (cons (car xs) acc) (cdr xs))])
+             (values (cons (car xs) sp) rst)))))
+
+#| use n ordered predicates to split a list into sublists by those predicates in order
+   e.g. (splitf-at/multiple (range 10) (curry = 4) (curry = 7))
+   => '((0 1 2 3) (4 5 6) (7 8 9))
+   NOTE: * unlike splitf-at, predicates break, not take!
+         * former predicates must be filled first!
+              (splitf-at/multiple (range 10) (curry = -1) (const #t))
+           => '((0 1 2 3 4 5 6 7 8 9))
+         * none of the output list's elements is null. unfortunetaly the type
+           checking is not sophisticated enough to reflect this.
+         * if the 1st predicate matches the 1st element, then no splitting occurs,
+           e.g. (splitf-at/multiple '(1 2 3 4) (curry = 1))
+             => '((1 2 3 4))
+           e.g. (splitf-at/multiple '(1 2 3 4 5 6) (curry = 1) (curry = 4))
+             => '((1 2 3) (4 5 6))
+         * (splitf-at/multiple '() ps ...) => '()
+         * you can do some clever parsing using clever predicates:
+              (splitf-at/multiple '(1 2 3 4 5 6) (curry = 3) (const #t))
+           => '((1 2) (3) (4 5 6))
+         * #:double? #t makes the prior example return '((1 2 3) (3 4) (4 5 6))
+|#
+;; (: splitf-at/multiple (∀ (a) (-> (Listof a) [#:double? Boolean] (-> a Any) * (Listof (Listof a)))))
+(define (splitf-at/multiple #:double? [double? #f] xs . preds)
+  (let loop ([preds preds] [acc-elem null] [rst xs])
+    (cond
+      ;;; base cases. note that some code prevents adding empty lists to the returned value
+      ;; and has no analogue in splitf-at/multiple/slices.
+      [(and (null? preds) (null? rst)) (or-null acc-elem (list (reverse acc-elem)))]
+      [(null? preds) (list (if (null? acc-elem) rst (append (reverse acc-elem) rst)))]
+      [(null? rst) (or-null acc-elem (list (reverse acc-elem)))]
+      ;;; recursive cases
+      [((car preds) (car rst)) ; next predicate matches; add acc-elem to ret val then reset acc-elem.
+       (if (null? acc-elem)
+           (loop (cdr preds) (list (car rst)) (cdr rst))
+           (cons (reverse (if double? (cons (car rst) acc-elem) acc-elem))
+              (loop (cdr preds) (list (car rst)) (cdr rst))))]
+      ;; add current element into acc-elem
+      [else (loop preds (cons (car rst) acc-elem) (cdr rst))])))
+
+;; like splitf-at/multiple but returns slices
+;; like how splitf-at/multiple returns a list of the original list if given no predicates,
+;; splitf-at/multiple/slices returns a slice [0:len]
+;; (: splitf-at/multiple/slices (∀ (a) (-> (Vectorof a) [#:double? Boolean] (-> a Any) * (AList Integer Integer))))
+(define (splitf-at/multiple/slices #:double? [double? #f] v . preds)
+  (let ([len (vector-length v)])
+    ;; whereas splitf-at/multiple's acc-elem starts at null then begins accumulating elements starting
+    ;; from when the predicate matched & ending with the last element not matching (car preds),
+    ;; this acc-elem starts at #f, then once a predicate matches, becomes start-pos, and when (car preds)
+    ;; matches, (cons start-pos pos) is added to the ret val and acc-elem, depending on double?, becomes either
+    ;; end-pos or (add1 end-pos).
+    (let loop ([preds preds] [last-match-pos 0] [pos 0])
+      (cond [(or (null? preds) (>= pos len)) (list (cons last-match-pos len))]
+            [((car preds) (vector-ref v pos)) (cons (cons last-match-pos (if double? (add1 pos) pos)) (loop (cdr preds) pos (add1 pos)))]
+            [else (loop preds last-match-pos (add1 pos))]))))
+
+;; if predicate matches first element of input list, then returned
+;; list's first element is null. this is a feature, not a bug.
+;; (break-on/all odd? (range 6)) --> '((0) (1 2) (3 4) (5))
+;; (: break-on/all (∀ (a) (-> (-> a Boolean) (Listof a) (Listof (Listof a)))))
+(define (break-on/all p xs)
+  (let loop ([acc null] [rst xs])
+    (cond [(null? rst) (list (reverse acc))]
+          [(p (car rst)) (cons (reverse acc) (loop (list (car rst)) (cdr rst)))]
+          [else (loop (cons (car rst) acc) (cdr rst))])))
+
+;; like in-slice (in racket/sequence) but supports padding the last slice.
+;; if pad, then the last row will be padded on the right so that it's the given length
+;; (: chunks-of (∀ (t) (-> Positive-Integer (Listof t) [#:pad (Option t)] (NonEmpty (Listof t)))))
+(define (chunks-of i s #:pad [pad #f])
+  (let loop ([s s])
+    (if (< (length s) i)
+        (list (if pad
+                  (append s (make-list (- i (length s)) pad))
+                  s))
+        (let-values ([(a b) (split-at s i)])
+          (if (null? b)
+              (list a)
+              (cons a (loop b)))))))
+
+;; (split-at-indices (set 4 5 10) (range 11)) --> '((0 1 2 3) (4) (5 6 7 8 9) (10))
+;; it's not an error to have an index out of range; these are ignored.
+;; if you want to split on any of a set of values rather than on indices, then
+;; do (break-on/all (curry set-member? _) _)
+;; (: split-at-indices (∀ (a) (-> (Setof Index) (Listof a) (Listof (Listof a)))))
+(define (split-at-indices is xs)
+  (let loop ([acc null] [rst xs] [k 0])
+    (cond [(null? rst) (list (reverse acc))]
+          [(set-member? is k) (cons (reverse acc) (loop (list (car rst)) (cdr rst) (add1 k)))]
+          [else (loop (cons (car rst) acc) (cdr rst) (add1 k))])))
+
+;; (cmp-len n) runs in O(n) rather than O(length of list). good for long lists.
+;; (: cmp-len (-> Natural (Listof Any) (U 'lt 'gt 'eq)))
+(define (cmp-len n xs)
+  (let loop ([k 0] [rst xs])
+    (cond [(= k n) (if (null? rst) 'eq 'gt)]
+          [(null? rst) 'lt]
+          [else (loop (add1 k) (cdr rst))])))
+
+(define (length<? n xs) (symbol=? 'lt (cmp-len n xs)))
+(define (length>=? n xs) (not (length<? n xs)))
+(define (length=? n xs) (symbol=? 'eq (cmp-len n xs)))
+
+;; courtesy of https://www.geeksforgeeks.org/longest-monotonically-increasing-subsequence-size-n-log-n/
+;; TODO: cf https://en.wikipedia.org/wiki/Patience_sorting
+;; O(log(n))
+;; < for increasing, > for decreasing
+;; (: longest-monotonic-subsequence-length (∀ (a) (-> (Listof a) (-> a a Boolean) Natural)))
+(define (longest-monotonic-subsequence-length xs cmp)
+  (if (null? xs)
+      0
+      (let loop ([t (hash 0 (car xs))] [len 1] [k 1] [xs (cdr xs)])
+           (if (null? xs)
+               (begin (print-vars k) len)
+               (let*-values ([(x) (car xs)]
+                             [(t len) (cond [(cmp x (hash-ref t 0)) (values (hash-set t 0 x) len)]
+                                            [(not (cmp x (hash-ref t (sub1 len)))) (values (hash-set t len x) (add1 len))]
+                                            [else (values (hash-set t (let loop ([l -1] [r (sub1 len)])
+                                                                           (if (> (- r l) 1)
+                                                                               (let ([m (+ l (quotient (- r l) 2))])
+                                                                                 (if (cmp (hash-ref t m) x)
+                                                                                     (loop m r)
+                                                                                     (loop l m)))
+                                                                               r))
+                                                                    x)
+                                                          len)])])
+                 (loop t len (add1 k) (cdr xs)))))))
+
+;; courtesy of wikipedia https://en.wikipedia.org/wiki/Longest_increasing_subsequence
+;; (: __lms (∀ (a) (-> (Vectorof a) (-> a a Boolean) (Values (HashTable Integer Integer) (HashTable Integer Integer) Integer))))
+(define (__lms xs cmp)
+  (let ([n (vector-length xs)])
+    (let loop ([p (hash)]
+               [m (hash 0 0)]
+               [l 0] [i 0])
+      (if (< i n)
+          (let ([new-l (let bins ([lo 1] [hi l])
+                            (if (<= lo hi)
+                                (let ([mid (ceiling (/ (+ lo hi) 2))])
+                                  (if (cmp (vector-ref xs (hash-ref m mid)) (vector-ref xs i))
+                                      (bins (add1 mid) hi)
+                                      (bins lo (sub1 hi))))
+                                lo))])
+            (loop (hash-set p i (hash-ref m (sub1 new-l)))
+                  (hash-set m new-l i)
+                  (if (> new-l l) new-l l)
+                  (add1 i)))
+          (values p m l)))))
+
+;; < for increasing, > for decreasing
+#;(: longest-monotonic-subsequence (∀ (a b) (case-> (-> (Vectorof a) (-> a a Boolean) (Listof a))
+                                                  (-> (Vectorof a) (-> a a Boolean) (-> a b) (Listof b)))))
+(define longest-monotonic-subsequence
+  (case-lambda [(xs cmp) (let*-values ([(p m l) (__lms xs cmp)]
+                                       [(s _) (for/fold ([s null] [k (hash-ref m l)])
+                                                        ([_ (in-range l 0 -1)])
+                                                (values (cons (vector-ref xs k) s) (hash-ref p k)))])
+                           s)]
+               [(xs cmp f) (let*-values ([(p m l) (__lms xs cmp)]
+                                         [(s _) (for/fold ([s null] [k (hash-ref m l)])
+                                                          ([_ (in-range l 0 -1)])
+                                                  (values (cons (f (vector-ref xs k)) s) (hash-ref p k)))])
+                             s)]))
+
+;; not even sure how to describe this one except to say that it's used in calculating
+;; convex hulls.
+;; (convex-subsequence > '(95.48 95.27 95.33 95.24 95.13 95.05 95 94.92 95.12))
+;; => '(95.48 95.33 95.24 95.13 95.12) whereas longest-monotonic-subsequence returns
+;;    '(95.48 95.27 95.24 95.13 95.05 95 94.92).
+;; returned vector is mutable.
+;; < for increasing, > for decreasing
+;; (: convex-subsequence (∀ (a) (-> (Sequenceof a) (-> a a Boolean) (Listof a))))
+(define (convex-subsequence xs cmp)
+  (longest-monotonic-subsequence ; longest monotonic subsequence of indices
+   (let ([v (for/vector ([i (in-naturals)] [x xs]) (cons i x))])
+     (vector-sort! v (on cmp cdr))
+     v)
+   (on < car)
+   cdr))
+
+;; NEXT: refactor on-interval to accept & return sequences.
+;; consider takef & dropf wrt predicates vs ordered positions; intervals delimited by ordered elements are
+;; a specific version of "start at predicate then take until predicate."
+;; this would generalize slices from vectors to sequences, and from integral positions to predicates
+;; (this is currently splitf-at/multiple[/slices]) (with refinement for faster operations when appropriate.)
+
+;; (define-type (Interval t) (Pairof (U 'lt 'gt t) t))
+
+#| for `(lb . ub) and `(lt . ,ub) if < is <= then bounds are included; else they'ren't.
+   for `(gt . ,lb) if < is <= then lb is not includod; else it is.
+e.g. (on-interval X identity Y (range 7))
+X = <, Y = '(lt . 4): '(0 1 2 3)
+X = <, Y = '(gt . 4): '(4 5 6)
+X = <, Y = '(2 . 4): '(3)
+X = <=, Y = '(lt . 4): '(0 1 2 3 4)
+X = <=, Y = '(gt . 4): '(5 6)
+X = <=, Y = '(2 . 4): '(2 3 4)
+|#
+;; (: on-interval (∀ (a b) (-> (-> a b) (-> b b Boolean) (Interval b) (Listof a) (Listof a))))
+(define (on-interval ->b < i as)
+  (let ([cari (car i)]
+        [cdri (cdr i)])
+    (if (symbol? cari)
+        (case cari
+          [(lt) (takef as (λ (a) (< (->b a) cdri)))]
+          [(gt) (dropf as (λ (a) (< (->b a) cdri)))]
+          [else (error "impossible")])
+        (_on-interval ->b < cari cdri as))))
+
+;; (: _on-interval (∀ (a b) (-> (-> a b) (-> b b Boolean) b b (Listof a) (Listof a))))
+(define (_on-interval ->b < lb ub as)
+  (foldr (λ (a acc)
+           (let ([b (->b a)])
+             (if (and (< lb b) (< b ub))
+                 (cons a acc)
+                 acc)))
+         null as))
+
+#| e.g. (with-seq-lists (ns ss ns2)
+          (in-parallel (in-range 4) '(cat bat hat mat) (in-range 4 8))
+            (printf "~a / ~a / ~a~n" ns ss ns2))
+prints (0 1 2 3) / (cat bat hat skat) / (4 5 6 7) |#
+(define-syntax (with-seq-lists stx)
+  (syntax-parse stx
+                [(_ (acc:id ...) seq . body)
+                 (with-syntax ([(loop-var ...) (generate-temporaries #'(acc ...))])
+                   #'(let-values ([(acc ...) (for/foldr ([acc null] ...) ([(loop-var ...) seq])
+                                               (values (cons loop-var acc) ...))]) . body))]))
+
+;;; folds
+
+;; where's applicative Fold when ya need it, right?
+;; this function is interesting b/c it calculates both min & max given only <=
+;; (: min&max (∀ (a) (-> (-> a a Boolean) (Sequenceof a) (Values a a))))
+(define (min&max lt xs)
+  (let-values ([(1st more? next) (sequence-split-at 1 xs)])
+    (if (null? 1st)
+        (raise-argument-error 'min&max "non-empty sequence" xs)
+        (let loop ([smol (car 1st)] [big (car 1st)])
+          (if (more?)
+              (let ([x (next)]) (loop (if (lt smol x) smol x) (if (lt x big) big x)))
+              (values smol big))))))
+
+;; reduce an |n| list to an |n-1| by performing a function on all adjacent elements
+;; (: fold-pairs-into-list (∀ (a b) (-> (-> a a b) (Listof a) (Listof b))))
+(define (fold-pairs-into-list f xs)
+  (or-null xs (let loop ([x (car xs)] [xs (cdr xs)])
+                   (or-null xs (cons (f x (car xs)) (loop (car xs) (cdr xs)))))))
+
+;; whereas map essentially zips many lists together, then applies a function to each element,
+;; multimap applies n functions to one list, returning n lists, and iterates only once.
+;; TODO
+#;(: multimap (∀ (a c ...) (case-> (-> (-> a c) ... (NonEmpty a) (Values (NonEmpty c) ...))
+                                   (-> (-> a c) ... (Listof a) (Values (Listof c) ...)))))
+;; (define (multimap xs . fs) (let loop : _ ([rst xs]) (or-null xs (map (λ ([f : _]) (f (car xs)))fs))))
+
+;; (: map-but-last (∀ (a c) (-> (-> a c) (-> a c) (Listof a) (Listof c))))
+(define (map-but-last f f/final xs)
+  (or-null xs
+           (let loop ([rst xs])
+             (if (null? (cdr rst))
+                 (list (f/final (car rst)))
+                 (cons (f (car rst)) (loop (cdr rst)))))))
+
+;; omit the last element. identity function if given the null list.
+;; (: init (∀ (a) (-> (Listof a) (Listof a))))
+(define (init xs) (or-null xs (let loop ([rst xs]) (or-null (cdr rst) (cons (car rst) (loop (cdr rst)))))))
+
+;;; hash tables
+
+#| insert key/value pairs, if their associated conditions are truthy
+   the same key may be used multiple times; the last truthy one will be
+   put into the map, a la hash-set. for example, in the table returned by
+   (hash-set/cond (hash 'a 20 'b "yes")
+                  #t 'b "canary"
+                  #t 'b 452)
+   , b is 452.
+
+  CAVEAT:
+  the condition, key, and value are all treated separately.
+  (let ([x #f]) (hash-set/cond (hash) x 'x (or x (error "impossible"))))
+  will raise the error because, even though hash-set/cond guarantees
+  that x will not be added unless it's truthy, the value expression is
+  evaluated before being passed to hash-set/cond! unfortunately it appears
+  impossible to support (U (-> v) v) instead of v in #:rest-star (Any k v),
+  so if you need thunks or promises, you'll need to use hash-set/cond with types k (-> v)
+  and then evaluate when you retrieve values or iterate over the table.
+|#
+;; (: hash-set/cond (∀ (k v) (->* ((HashTable k v)) #:rest-star (Any k v) (HashTable k v))))
+(define (hash-set/cond ht . args)
+  (let loop ([ht ht] [args args])
+    (if (null? args)
+        ht
+        (loop (if (car args)
+                  (hash-set ht (cadr args) (caddr args))
+                  ht)
+              (cdddr args)))))
+
+;;; numerics
+
+(define (%chg a b) (/ (* 100 (- b a)) a))
+(define (%chg-str a b) (let ([chg (%chg a b)]) (format (if (positive? chg) "+~a%" "~a%") (real->decimal-string chg 2))))
+
+;; round a number to a given number of digits, e.g.
+;; (round/num-digits 2 45.47253) --> 45.47
+;; (round/num-digits 1 45.47253) --> 45.5
+;; NOTE: a 5 in the last place will sometimes round down, e.g.
+;; (round 0.5) → 0, (round 0.51) → 1, and (round 1.5) → 2. because
+;; round/num-digits is defined in terms of round, this can affect it.
+;; (: round/num-digits (-> Natural Float Float))
+(define (round/num-digits num-digits x) (let ([d (expt 10 num-digits)]) (/ (round (* x d)) d)))
+
+;; like round/num-digits but always rounds down [truncates]
+;; (: truncate/num-digits (-> Natural Float Float))
+(define (truncate/num-digits num-digits x) (let ([d (expt 10 num-digits)]) (/ (truncate (* x d)) d)))
+
+;; nearest higher increment, and the distance to it:
+;; (unit-ceiling&distance 5 3) --> 5 2
+;; (unit-ceiling&distance 7 18) --> 21 3
+;; (: unit-ceiling&distance (-> Integer Integer (Values Integer Integer)))
+(define (unit-ceiling&distance u n)
+  (let ([d (- u (modulo n u))])
+    (values (+ n d) d)))
+
+;;; miscellaneous specific functions
+
+;; (: n-choose-2/partitioned (∀ (a b) (-> (-> a a b) (Listof a) (Listof (Listof b)))))
+(define (n-choose-2/partitioned f xs)
+  (let loop ([rst xs])
+       (let ([xs (cdr rst)])
+         (or-null xs (cons (map (curry f (car rst)) xs) (loop xs))))))
+
+;; for convenience & efficiency, you can pass a function that's
+;; applied while we build the combinations. to make a list of pairs,
+;; pass the cons function.
+;; for this to make any sense the function should be commutative.
+;; still, if the input list is ordered by <, then the binary function's
+;; 1st arg will be the lesser value and its 2nd arg the greater.
+;; (: n-choose-2 (∀ (a b) (-> (-> a a b) (Listof a) (Listof b))))
+(define (n-choose-2 f xs) (apply append (n-choose-2/partitioned f xs)))
+
+;; checks whether any elements occur at least n times in a sequence.
+;; uses a hash table for internal counting, so be careful when using
+;; objects (cf primitives)!
+;; (: n+occurrences? (∀ (a) (-> Natural (Listof a) Boolean)))
+(define (n+occurrences? lim xs)
+  (let loop ([cnts (hash)] [xs xs])
+       (and (pair? xs)
+          (let* ([x (car xs)] [new-cnts (hash-update cnts x add1 (const 0))])
+            (or (>= (hash-ref new-cnts x (const 0)) lim)
+               (loop new-cnts (cdr xs)))))))
+
+;; should return #f if item is inconsiderable
+;; (define-type (RatingFn a) (-> a (Option Real)))
+
+;; determine rating for all in a list, then return the top n, or
+;; however many are considerable. may return inconsiderables.
+;; best/only-worthy guarantees no inconsiderables, but is less efficient.
+;; e.g. (best (λ ([r : Integer]) (and (even? r) r)) '(0 1 5 6 3 7 4 2))
+;; => '(6 4 2 0 1 5 3 7). note that the elements after 0 retain their positions
+;; relative to each other before being passed to `best`:
+;; '(1 5 3 7) = (filter odd? '(0 1 5 6 3 7 4 2)).
+;; (: best (∀ (a) (-> (RatingFn a) (Listof a) [#:limit (Option Natural)] [#:cache-ratings? Boolean] (Listof a))))
+(define (best r xs #:limit [lim #f] #:cache-ratings? [cr? #f])
+  (let ([res (sort xs (λ (x y)
+                        ;; sort requires (-> a a Boolean), not (-> a a Any)
+                        ;; if #t then swap; if #f then leave as they are
+                        ;; the real subset of (Option Real) is greater than the #f subset.
+                        ;; the real subset is totally orderde as usual. the #f subset is unordered.
+                        (cond [(and x y) (> x y)]
+                              [x #t]
+                              [else #f])) ; don't bother swapping two elements whose ratings are both #f
+              #:cache-keys? cr?
+              #:key r)])
+    (if lim (or (<- lim res) null) res)))
+
+;; e.g. (best (λ ([r : Integer]) (and (even? r) r)) '(0 1 5 6 3 7 4 2))
+;; => '(6 4 2 0)
+;; (: best/only-worthy (∀ (a) (-> (RatingFn a) (Listof a) [#:limit (Option Natural)] [#:cache-ratings? Boolean] (Listof a))))
+(define (best/only-worthy r xs #:limit [lim #f] #:cache-ratings? [cr? #f])
+  (let-values ([(x _) (splitf-at (best r xs #:limit lim #:cache-ratings? cr?) r)]) x))
+
+;; a [probably always] less-effecient version of best/only-worthy
+;; best/only-worthy exploits best's ordering. best/only-worthy2 explicitly filters-out
+;; #f ratings then sorts by rating. this adds two traversals over the list.
+;; written first, and left here in case it's ever needed.
+;; (: best/only-worthy2 (∀ (a) (-> (RatingFn a) (Listof a) [#:limit (Option Natural)] [#:cache-ratings? Boolean] (Listof a))))
+(define (best/only-worthy2 r xs #:limit [lim #f] #:cache-ratings? [cr? #f])
+  (let ([res (map ; 2st additional traversal
+              car
+              (sort
+               (for/fold ([acc null]) ([x xs]) ; 1st additional traversal
+                 (let ([r (r x)]) (if r `((,x . ,r) . ,acc) acc)))
+               >
+               #:cache-keys? cr?
+               #:key cdr))])
+    (if lim (or (<- lim res) null) res)))
+
+;; given a sequence of things of type s and a hash on s, return a hashmap from
+;; the hash to the object whence the hash was computed.
+;; (: hash->table (∀ (s id) (-> (-> s id) (Sequenceof s) (HashTable id s))))
+(define (hash->table ->id ss) (for/hash ([s ss]) (values (->id s) s)))
+
+;; assumes that input is between 0 & 1. returned color has full saturation & value.
+;; example: (plot (list (color-field (λ ([x : Real] [y : Real]) (hue->rgb (/ x 30))) 0 30 0 1 #:samples 100)))
+;; courtesy of https://www.ronja-tutorials.com/post/041-hsv-colorspace/
+;; set range to 5.1 to not loop hue completely. this removes ambiguity of 0 & 1 having the same color.
+;; (: hue->rgb (->* (Real) (Float) (List Integer Integer Integer)))
+(define (hue->rgb h [range 6.])
+  (list (max 0 (min 255 (exact-floor (* 255 (- (abs (- (* range h) 3)) 1)))))
+        (max 0 (min 255 (exact-floor (* 255 (- 2 (abs (- (* range h) 2)))))))
+        (max 0 (min 255 (exact-floor (* 255 (- 2 (abs (- (* range h) 4)))))))))

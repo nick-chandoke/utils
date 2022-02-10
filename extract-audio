@@ -1,0 +1,10 @@
+#!/bin/sh
+# NEXT: add optional cmdline arg for output file (excepting extension, of course)
+input="$1"
+audiofmt="$(ffprobe -show_streams -select_streams a -print_format json "$input" 2>/dev/null | jp -u 'streams[0].codec_name')" # NEXT: switch [case] this value to produce a file extension
+case "$audiofmt" in
+  aac) ext=aac;;
+  opus) ext=opus;;
+  *) echo "unknown audio format: $audiofmt" 1>&2; exit ;;
+esac
+ffmpeg -i "$input" -vn -acodec copy "${1%.*}.$ext"

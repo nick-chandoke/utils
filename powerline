@@ -1,0 +1,17 @@
+#!/usr/bin/env racket
+#lang racket/base
+
+(require (only-in racket/port port->string) (only-in racket/string string-trim))
+(provide (except-out (all-defined-out) sys->num round/num-digits))
+
+;; TODO: add  and 
+;; not using cbatticon b/c it doesn't output a string; it's made for system trays.
+
+(define (sys->num s) (string->number (string-trim (call-with-input-file s port->string))))
+(define (round/num-digits num-digits x) (let ([d (expt 10 num-digits)]) (/ (round (* x d)) d))) ; from util.rkt
+
+(define (get-ac?) (string=? "1\n" (call-with-input-file "/sys/class/power_supply/AC/online" port->string)))
+(define (get-charge%) (* 100 (/ (sys->num "/sys/class/power_supply/BAT0/charge_now")
+                                (sys->num "/sys/class/power_supply/BAT0/charge_full"))))
+
+(module+ main (printf "~a% ~a" (floor (get-charge%)) (if (get-ac?) "" "")))

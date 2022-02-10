@@ -1,0 +1,9 @@
+#!/usr/bin/env racket
+#lang racket/base
+
+;; like sort -u but preserves order
+
+(require (only-in racket/port port->lines) (only-in racket/set set-member? set-add set))
+(void (for/fold ([seen (set)]) ([l (port->lines #:close? #t)]) ; port->lines should really return a sequence!
+        (unless (set-member? seen l) (displayln l))
+        (set-add seen l)))
