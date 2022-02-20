@@ -2,7 +2,7 @@
 
 ;;; ring buffer emulation. uses a vector rather than a circular linked list.
 
-(provide (all-defined-out))
+(provide (except-out (all-defined-out) ring-buffer))
 (require (only-in racket/vector vector-split-at vector-append)
          (only-in racket/function curry)
          (only-in racket/match define/match)

@@ -6,7 +6,7 @@
 (require (only-in "ring-buffer.rkt" in-interval)
          (for-syntax racket/base
                      (only-in racket/function curry)
-                     (only-in racket/list last range)
+                     (only-in racket/list last range drop)
                      (only-in racket/string string-join)
                      (only-in racket/syntax syntax-local-eval)
                      syntax/parse)
@@ -220,74 +220,17 @@ passing functions of those parameters to the parent constructor, e.g.
 (define (maybe->list m) (if m (list m) null))
 (define ((on bin un) a b) (bin (un a) (un b)))
 
-#| with loop variables, iterate through a sequence, updating the variables while returning a sequence.
-   also, if you've already used sequence-generate, then you can pass those instead of a sequence, e.g.
-   (let-values ([(more? next) (sequence-generate _)]) (fold/sequence _ _ ([(z) (more? next)]) _))
-  e.g.
-(for ([(i s) (fold/sequence (Integer String)
-                            ([x : String "boom"] [y : Integer 0])
-                            ([(z) (in-range 4)])
-                            (values
-                             ;; updated loop vars
-                             (string-append x (if (even? y) " boom" " bap")) (add1 y)
-                             ;; sequence element values
-                             (if (< y 3) y (error "nlt"))
-                             x))]
-      #:final (= i 2))
-  (printf "~a & ~a~n" i s))
-prints
-0 & boom
-1 & boom boom
-2 & boom boom bap
-|#
-#;(define-syntax (fold/sequence stx)
-  (syntax-parse stx #:literals (values) #:datum-literals (:)
-                [(_ (~describe "output sequence types" (stype ...+)) vs ([(x ...+) xs]) ; TODO: make bad syntax messages better! currently ([x '(1 2 3)]) just says "bad syntax" instead of "expected (x), given x"
-                    body ...+) ; TODO: support binding from multiple sequences. this is not much new functionality as we can already have in-sequences
-                 #:with ([v:id : vtype v0] ...+) #'vs
-                 #:with (e ...) (generate-temporaries #'(stype ...))
-                 #:with (spos ...) (map (λ (n) (datum->syntax stx n)) (range (length (syntax->list #'(stype ...)))))
-                 #:with (vpos ...) (map (λ (n) (datum->syntax stx n)) (range (length (syntax->list #'vs))))
-                 #:with seq-expr (syntax-parse #'xs [(more?:id next:id) #'(values more? next)] [xs #'(sequence-generate xs)])
-                 #'(let-values ([(more? next) seq-expr])
-                     (if (more?)
-                         ;; first iteration is special: it's needed to initialize the rets vector, since we can't create an empty vector unless we fill it with elemeents. because the types are not known beforehand, we cannot know dummy values.
-                         (let*-values ([(x ...) (next)]
-                                       [([v : vtype] ...) (values v0 ...)] ; bound for body
-                                       [([v : vtype] ... [e : stype] ...) (begin body ...)]
-                                       [([loop-vars : (Mutable-Vector vtype ...)]) (vector v ...)]
-                                       [([rets : (Mutable-Vector stype ...)]) (vector e ...)])
-                           ((inst make-do-sequence Void stype ...)
-                            (λ _ (values (λ _ (values (vector-ref rets spos) ...))
-                                         (λ _ (let*-values ([(x ...) (next)]
-                                                            [([v : vtype] ...) (values (vector-ref loop-vars vpos) ...)]
-                                                            [([v : vtype] ... [e : stype] ...) (begin body ...)])
-                                                (vector-set! loop-vars vpos v) ...
-                                                (vector-set! rets spos e) ...))
-                                         (void)
-                                         #f
-                                         #f
-                                         (λ _ (more?)))))) ; TODO: support #:break
-                         (inst empty-sequence stype ...)))]))
-
 ;; e.g. ((λcase c [(3) 4] [else (add1 c)]) 3) => 4
 (define-syntax (λcase stx)
   (syntax-parse stx [(_ var:id . rst) #'(λ (var) (case var . rst))]))
 
-;; TODO: the ideal definition, using syntax-parse or syntax-case
+;; TODO
 ;; e.g. (cond/maybe [(and #f 3) => x (add1 x)] [(and #t 1) => x (sub1 x)]) => 0
-#;(define-syntax (cond/maybe stx)
-  (syntax-case stx (=>)
-    [(_ clause ...)
-     (let loop ([clauses (syntax->list #'(clause ...))])
-       (if (null? clauses)
-           null
-           #`(let ([x (car clauses)]))))]))
 
 ;; e.g. (? (> 3 4) (displayln "hi") (displayln "yo") : "pizza")
 (define-syntax (? stx)
-  (syntax-parse stx
-                [(_ cond:expr t:expr ... : f:expr ...) ; syntax-case can't handle this pattern; it complains about successive rest patterns
+  (syntax-parse stx #:datum-literals (:)
+                [(_ cond t ... : f ...) ; syntax-case can't handle this pattern; it complains about successive rest patterns
                  #'(if cond (begin t ...) (begin f ...))]))
 
 ;;; miscellaneous basic functions
@@ -998,12 +941,6 @@ prints (0 1 2 3) / (cat bat hat skat) / (4 5 6 7) |#
               (let ([x (next)]) (loop (if (lt smol x) smol x) (if (lt x big) big x)))
               (values smol big))))))
 
-;; reduce an |n| list to an |n-1| by performing a function on all adjacent elements
-;; (: fold-pairs-into-list (∀ (a b) (-> (-> a a b) (Listof a) (Listof b))))
-(define (fold-pairs-into-list f xs)
-  (or-null xs (let loop ([x (car xs)] [xs (cdr xs)])
-                   (or-null xs (cons (f x (car xs)) (loop (car xs) (cdr xs)))))))
-
 ;; whereas map essentially zips many lists together, then applies a function to each element,
 ;; multimap applies n functions to one list, returning n lists, and iterates only once.
 ;; TODO
@@ -1081,20 +1018,29 @@ prints (0 1 2 3) / (cat bat hat skat) / (4 5 6 7) |#
 
 ;;; miscellaneous specific functions
 
-;; (: n-choose-2/partitioned (∀ (a b) (-> (-> a a b) (Listof a) (Listof (Listof b)))))
-(define (n-choose-2/partitioned f xs)
-  (let loop ([rst xs])
-       (let ([xs (cdr rst)])
-         (or-null xs (cons (map (curry f (car rst)) xs) (loop xs))))))
+#| (for-each displayln
+             (n-choose-2 (λ (x1 y1 x2 y2)
+                           (format "d[(~a,~a),(~a,~a)] = ~a" x1 y1 x2 x2 (sqrt (+ (expt (- x2 x1) 2) (expt (- y2 y1) 2)))))
+                         '(1 2 3)
+                         '(3 4 5)))
+   => d[(1,3),(2,2)] = 1.4142135623730951
+      d[(1,3),(3,3)] = 2.8284271247461903
+      d[(2,4),(3,3)] = 1.4142135623730951
 
-;; for convenience & efficiency, you can pass a function that's
-;; applied while we build the combinations. to make a list of pairs,
-;; pass the cons function.
-;; for this to make any sense the function should be commutative.
-;; still, if the input list is ordered by <, then the binary function's
-;; 1st arg will be the lesser value and its 2nd arg the greater.
-;; (: n-choose-2 (∀ (a b) (-> (-> a a b) (Listof a) (Listof b))))
-(define (n-choose-2 f xs) (apply append (n-choose-2/partitioned f xs)))
+* expects, but does not check, that all lists have equal length.
+|#
+(define (n-choose-2 f . xss)
+  (let loop ([xss xss])
+    (let ([xs (map car xss)]
+          [yss (map cdr xss)])
+      ;; if any list is null then they should all be null. may as well check the first.
+      ;; b/c we use map below, all lists must have same length anyway.
+      (if (null? (car yss))
+          '()
+          (foldr cons
+                 (loop yss)
+                 (apply map (λ ys (apply f (append xs ys))) yss))))))
+
 
 ;; checks whether any elements occur at least n times in a sequence.
 ;; uses a hash table for internal counting, so be careful when using

@@ -1,0 +1,6 @@
+#!/bin/sh
+# usage: sway-bg OUTPUT IMAGE_PATH
+p="$(ps -eo '%p %c %a' | awk '$2=="swaybg"&&$5=="'"$1"'"{print($1)}')"
+if test -n "$p"; then kill "$p"; fi
+# to match properly, -o must be the first option.
+exec swaybg -o "$1" -i "$2" -m fill

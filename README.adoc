@@ -19,6 +19,7 @@ parrot.hs:: a server that displays your http request
 powerline:: display a powerline. also a library, and a dependency of `battery-monitor`.
 rand:: get a truly random number from the terminal
 searchpkgs:: search nixpkgs easily & efficiently, with pretty output
+sway-bg:: kills any currently running `swaybg` process on a given output, then launches a new `swaybg` process for that output
 unique:: `sort -u` but preserves order.
 
 .libraries

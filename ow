@@ -26,7 +26,7 @@
                   (close-input-port output)
                   (when input (close-output-port input)))]))
 
-;; TODO: support create version for synchronous process/piping. see
+;; TODO: support synchronous process/piping. see
 ;; programming/racket/racket/collects/racket/system.rkt for definition of system*.
 
 (define interactive? #f)

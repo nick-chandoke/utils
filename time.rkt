@@ -99,6 +99,8 @@
                                [else (error "parse-hh-mm-a-z: unrecognized period: ~a in timestring ~a" a timestr)])]
          [_ (error (format "parse-hh-mm-a-z: bad parse: ~a" timestr))]))
 
+(define (string->date d) (parse-date d "yyyy-MM-dd"))
+
 ;;; printing
 
 (define (date->string d) (~t d "yyyy-MM-dd"))
