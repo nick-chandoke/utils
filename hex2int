@@ -1,0 +1,13 @@
+#!/usr/bin/env racket
+#lang racket/base
+(require (only-in racket/port port->string) (only-in racket/string string-trim string-split))
+(let* ([args (current-command-line-arguments)]
+       [s1 (and (>= (vector-length args) 1) (vector-ref args 0))]
+       [s2 (and (not (terminal-port? (current-input-port)))
+                (string-trim (car (string-split (read-line)))))]
+       [s (if (and s1 s2)
+              (raise-user-error "you provided hex values in both arg1 and stdin. please provide only one.")
+              (or s1 s2))])
+  (when (not (or s1 s2)) (raise-user-error "you must provide a hex number as stdin or arg1. note: posix shells use # as a comment beginner; either quote appropriately or omit the #"))
+  (displayln (or (string->number (if (char=? #\# (string-ref s 0)) (substring s 1) s) 16)
+                 "<invalid input>")))

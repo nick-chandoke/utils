@@ -29,7 +29,7 @@
    push more elements without affecting the sequence, PROVIDED THAT you don't push more than
    <size> - n elements! consider the following:
 
-   (define rb (make-ring-buffer 10 0))
+   (define rb (make-ring-buffer 10))
    (ring-buffer-push! rb 1 2 4 7 6 4)
    (for ([z (in-queue rb)] [i (in-naturals)])
      (ring-buffer-push! rb 100 200 300)
@@ -54,7 +54,7 @@
 (define (ring-buffer-full? rb) (>= (ring-buffer-index rb) (vector-length (ring-buffer-data rb))))
 
 ;(: make-ring-buffer (∀ (a) (-> Positive-Integer a (RingBuffer a))))
-(define (make-ring-buffer size init-val) (ring-buffer 0 (make-vector size init-val)))
+(define (make-ring-buffer size [init-val 0]) (ring-buffer 0 (make-vector size init-val)))
 
 ;(: ring-buffer-from-elems (∀ (a) (-> a * (RingBuffer a))))
 (define (ring-buffer-from-elems . xs)

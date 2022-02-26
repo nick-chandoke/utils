@@ -14,9 +14,13 @@ evaluated, as one would expect!
 please use constr, which looks like const but expands to a lambda
 |#
 
-(provide (except-out (all-defined-out) retry-or-val print-request print-response) (all-from-out net/http-easy))
+(provide (except-out (all-defined-out)
+                     retry-or-val print-request print-response)
+         (all-from-out net/http-easy))
 
 (require (only-in racket/bytes bytes-join)
+         (only-in web-server/private/connection-manager connection-o-port)
+         (only-in web-server/servlet-dispatch serve/launch/wait)
          (only-in racket/function const)
          (only-in racket/port port->string)
          (only-in racket/string string-split string-join)
@@ -314,3 +318,25 @@ please use constr, which looks like const but expands to a lambda
                   ((hash-ref base-handler sc) r)
                   (base-handler r))
               'defer-to-catch-all)))))
+
+;; accept http requests until a terminal one is found, at which point
+;; the server dies and a value is returned.
+;; how to generate a self-signed cert & private key (which works
+;; with firefox but not chromium) as given by §6.3 web-server's docs:
+;; openssl genrsa -des3 -out pk.pem 1024
+;; openssl rsa -in pk.pem -out pk.pem
+;; chmod 400 pk.pem
+;; openssl req -new -x509 -nodes -sha1 -days 365 -key pk.pem > cert.pem
+;; ->resp/val is (-> request? (values response? any))
+(define (serve-until port ->resp/val #:cert [cert #f] #:pk [pk #f])
+  (define outval #f)
+  (serve/launch/wait #:port port
+                     #:ssl-cert cert
+                     #:ssl-key pk
+                     (λ (sem)
+                         (λ (conn req)
+                           (let*-values ([(o) (connection-o-port conn)]
+                                         [(resp v) (->resp/val req)])
+                             (display resp o) (flush-output o)
+                             (when v (semaphore-post sem) (set! outval v))))))
+  outval)

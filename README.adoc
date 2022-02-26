@@ -13,18 +13,20 @@ cs:: interactive color scheme selector. requires `fzf(1)`.
 del-not-here:: used with e.g. `cp -rut /mnt/backup/ /home` to synchronize folders' contents, here `/mnt/backup/home` with `/home`.
 extract-audio:: <obvious>
 fromsexy:: converts `.Xresources` output to a format usable by `kitty(1)`. named b/c i used it for <https://terminal.sexy> 's themes
+hex2int:: convert a base-16 (hexadecimal) string into a base-10 (decimal) integer
 lsext:: list the extensions of a given directory (and optionally its descendants) or list files of a given extension
 ow:: "open with." interactively browse files (using `fzf(1)`) and open them with a given program
 parrot.hs:: a server that displays your http request
 powerline:: display a powerline. also a library, and a dependency of `battery-monitor`.
 rand:: get a truly random number from the terminal
-searchpkgs:: search nixpkgs easily & efficiently, with pretty output
+searchpkgs:: search nix package sets easily & efficiently, with pretty output. designed for nixos users.
 sway-bg:: kills any currently running `swaybg` process on a given output, then launches a new `swaybg` process for that output
 unique:: `sort -u` but preserves order.
 
 .libraries
 
 [horizontal]
+cmdline-map.rkt:: parse command line options into a hash map and list of extra args
 http.rkt:: convenience functions around the `http-easy` library
 json-extra.rkt:: powerful json macros & accessor functions
 optimal.rkt:: given many maps with common keys, get all desired keys with the fewest map lookups
