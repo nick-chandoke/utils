@@ -18,6 +18,7 @@ lsext:: list the extensions of a given directory (and optionally its descendants
 ow:: "open with." interactively browse files (using `fzf(1)`) and open them with a given program
 parrot.hs:: a server that displays your http request
 powerline:: display a powerline. also a library, and a dependency of `battery-monitor`.
+r:: like `nohup(1)` but cleaner & more convenient; asynchronously executes a process and discards its stdout & stderr
 rand:: get a truly random number from the terminal
 searchpkgs:: search nix package sets easily & efficiently, with pretty output. designed for nixos users.
 set-monitors:: alternative to `kanshi(1)` (since kanshi didn't work for me); applies monitor arrangement config when run
