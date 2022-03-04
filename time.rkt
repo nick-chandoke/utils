@@ -20,20 +20,35 @@
                     (parse-datetime parse-datetime/unsafe)
                     (parse-moment parse-moment/unsafe))
          (only-in racket/function const) (only-in racket/string string-join) (only-in racket/match match)
-         (for-syntax racket/base))
+         (for-syntax racket/base (only-in racket/syntax format-id with-syntax*)))
 
 (define EPOCH (moment 1970 #:tz "UTC")) ;; as defined internally in gregor
 
-(define-syntax (define-safe-parses stx)
+(define-syntax (define-conversions stx)
   (let ([ts '("date" "time" "datetime" "moment")])
-    (with-syntax ([((ps . ps/u) ...) (map (λ (s) (datum->syntax stx (cons (string->symbol (format "parse-~a" s))
-                                                                       (string->symbol (format "parse-~a/unsafe" s))))) ts)]
-                  [((is . is/u) ...) (map (λ (s) (datum->syntax stx (cons (string->symbol (format "iso8601->~a" s))
-                                                                       (string->symbol (format "iso8601->~a/unsafe" s))))) ts)])
-      #'(begin (define (is s) (with-handlers ([exn:gregor:parse? (const #f)]) (is/u s))) ...
-               (define (ps s pat) (with-handlers ([exn:gregor:parse? (const #f)]) (ps/u s pat))) ...))))
+    (with-syntax* ([(defpats ...) #'((list "yyyy-MM-dd")
+                                     (list "HH:mm:ss" "hh:mm:ss a")
+                                     (list "yyyy-MM-dd'T'HH:mm:ss" "yyyy-MM-dd HH:mm:ss")
+                                     (list "yyyy-MM-dd'T'HH:mm:ssxx" "yyyy-MM-dd'T'HH:mm:ss.Sxx"))]
+                   [((_ . (defpat . _)) ...) #'(defpats ...)] ;; first _ is #'list
+                   [((ps ps-sym ps/u is is/u to-str) ...) (map (λ (s) (list (format-id stx #:source stx "parse-~a" s)
+                                                                            #`(quote #,(string->symbol (string-append "parse-" s)))
+                                                                            (format-id stx #:source stx "parse-~a/unsafe" s)
+                                                                            (format-id stx #:source stx "iso8601->~a" s)
+                                                                            (format-id stx #:source stx "iso8601->~a/unsafe" s)
+                                                                            (format-id stx #:source stx "~a->string" s)))
+                                                               ts)])
+      #'(begin (define (ps s #:raise? [raise? #f] . pats)
+                 (let* ([pats (if (null? pats) defpats pats)]
+                        [x (ormap (λ (pat) (with-handlers ([exn:gregor:parse? (const #f)]) (ps/u s pat)))
+                                  pats)])
+                   (if (and raise? (not x))
+                       (raise-argument-error ps-sym (format "a pattern in ~s" pats) s)
+                       x))) ...
+               (define (to-str x) (~t x defpat)) ...
+               (define (is s) (with-handlers ([exn:gregor:parse? (const #f)]) (is/u s))) ...))))
 
-(define-safe-parses)
+(define-conversions)
 
 ;; different from ->posix in that it returns the milliseconds since EPOCH
 ;; whereas ->posix returns the seconds since EPOCH.
@@ -43,16 +58,6 @@
 (define (iso8601/tzid->moment s)
   (with-handlers ([exn:gregor:parse? (const #f)]) (iso8601/tzid->moment/unsafe s)))
 
-;; moments are the most exact times. datetimes are simply less precise, and
-;; thus invite mistakes.
-;; (define-type TimeInterval (Pairof Moment Moment))
-
-;; TimeInterval -> String
-(define (time-interval->string w)
-  (format "~a⁓~a" (~t (car w) "h:mm a") (~t (cdr w) "h:mm a")))
-
-;; convenience function
-;; -> Moment TimeInterval Boolean
 (define (in-time-interval? t i)
   (and (moment>=? t (car i)) (moment<=? t (cdr i))))
 
@@ -98,12 +103,6 @@
                                [(string=? "p.m." a) (if (= 12 h) (time h m) (time (+ 12 h) m))]
                                [else (error "parse-hh-mm-a-z: unrecognized period: ~a in timestring ~a" a timestr)])]
          [_ (error (format "parse-hh-mm-a-z: bad parse: ~a" timestr))]))
-
-(define (string->date d) (parse-date d "yyyy-MM-dd"))
-
-;;; printing
-
-(define (date->string d) (~t d "yyyy-MM-dd"))
 
 ;;; type conversion
 

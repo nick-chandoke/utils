@@ -17,4 +17,4 @@
 ;; TODO: add binds to like, unlike, or delete the selected scheme
 ;; --preview-window ",0" for no window
 (parameterize ([current-input-port (open-input-string (get-output-string o))])
-  (system* (find-executable-path "fzf") "-e" "--preview" "settermcolor {}; colors" "--preview-window" "up,1"))
+  (void (system* (find-executable-path "fzf") "-e" "--preview" "settermcolor {}; colors" "--preview-window" "up,1")))

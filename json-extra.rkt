@@ -14,7 +14,6 @@
          (only-in racket/set set-member?)
          (only-in racket/format ~a)
          (only-in "util.rkt" pretty-table-str)
-         (only-in "time.rkt" parse-moment parse-datetime)
          (only-in racket/function identity)
          (for-syntax racket/base
                      syntax/parse
@@ -291,8 +290,6 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
                                               #'())])
         #'(begin (struct name (field ...) other ... kw-constructor ...) import-expr ... export-expr ...)))]))
 
-;; both js-> and -js-> reduce to merely fn
-
 ;; TODO: rename. it's now a misnomer; it really ensures that reals are jsexprs.
 ;; needed for e.g. (write-json `(1 2 ,(/ 5 3))), which fails b/c 5/3 isn't a legal json value.
 ;; however, (write-json (map real->jsexpr `(1 2 ,(/ 5 3)))) succeeds by converting 5/3 to a float,
@@ -362,15 +359,6 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
                         (cons (car ss)
                               (map string-titlecase (cdr ss))))
                  "?" #:left? #f #:right? #t)))
-
-(define (js/str->moment s)
-  (or (parse-moment s "yyyy-MM-dd'T'HH:mm:ssxx")
-      (parse-moment s "yyyy-MM-dd'T'HH:mm:ss.Sxx")
-      (error (string-append "js/str->moment: failed to parse " s))))
-
-(define (js/str->datetime s)
-  (or (parse-datetime s "yyyy-MM-dd")
-      (error (string-append "js/str->datetime: failed to parse " s))))
 
 ;;; hash tables
 

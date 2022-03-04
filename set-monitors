@@ -1,0 +1,39 @@
+#!/usr/bin/env racket
+#lang racket/base
+
+;; map available inputs to used inputs (choose how to use available inputs.)
+;; alternative to kanshi b/c it wasn't working for me. *shrug*
+;; doesn't automatically run on output (dis)connect, but w/e just keybind it
+;; in sway config.
+
+(require json
+         racket/system
+         racket/match
+         racket/set
+         (only-in racket/port port->string)
+         (only-in racket/list partition))
+
+(define (readproc p . args)
+  (match (apply process*/ports #f (current-input-port) 'stdout (find-executable-path p) args)
+         [(list output _input _pid _err ask)
+          (ask 'wait)
+          (begin0 (port->string output) (close-input-port output))]))
+
+(define (setoutputs . oss)
+  (let ([found-outputs (for/set ([x (string->jsexpr (readproc "swaymsg" "-t" "get_outputs"))]) (hash-ref x 'name))])
+    (let lp ([oss oss])
+      (unless (null? oss)
+        (let* ([os (car oss)]
+               [out-ids (for/set ([o os]) (car (regexp-match #px"[^[:space:]]+" o)))])
+          (if (subset? out-ids found-outputs)
+              (begin (for ([o os])
+                          (system (string-append "swaymsg output " o)))
+                     (for ([o (set-subtract found-outputs out-ids)])
+                          (system (string-append "swaymsg output " o " disable"))))
+              (lp (cdr oss))))))))
+
+;; only 'transform' changes when i physically roteate monitors
+(setoutputs '["HDMI-A-2 enable transform 90 position 0 0"
+              "HDMI-A-1 enable transform 0 position 1080 0"]
+            '["HDMI-A-1 enable"]
+            '["eDP-1 enable"])
