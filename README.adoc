@@ -29,6 +29,7 @@ unique:: `sort -u` but preserves order.
 
 [horizontal]
 cmdline-map.rkt:: parse command line options into a hash map and list of extra args
+dynamic-require-plus.rkt:: nice, clean way to load [non-kwarg] functions from other modules at runtime
 http.rkt:: convenience functions around the `http-easy` library
 json-extra.rkt:: powerful json macros & accessor functions
 optimal.rkt:: given many maps with common keys, get all desired keys with the fewest map lookups

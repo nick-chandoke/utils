@@ -55,27 +55,6 @@
           [(null? (cdr args)) (raise-argument-error 'alist "even number of arguments" args0)]
           [else (let-values ([(a b) (safe-split-at args 2)]) (cons (apply cons a) (loop b)))])))
 
-;; returns an identifier from either a symbol or identifier
-(define-syntax (->identifier stx)
-  (let ([x (cadr (syntax->datum stx))])
-    (datum->syntax stx
-                   (if (and (list? x) (equal? 'quote (car x)))
-                       (cadr x)
-                       x))))
-
-;; returns a symbol from either a symbol or identifier
-;; i.e. normalizes symbols or identifiers to a single quote
-;; if you're passing something that is either a symbol or an id
-;; whose referred-to value is a symbol, then the thing itself
-;; evaluates to a symbol, so use it as-as if you want that.
-;; to add a quote to something, do `(quote ,thing)
-(define-syntax (->symbol stx)
-  (let ([x (cadr (syntax->datum stx))])
-    (datum->syntax stx
-                   (if (and (list? x) (equal? 'quote (car x)))
-                       x
-                       `(quote ,x)))))
-
 ;; TODO: use in-syntax to replace all ()'s.
 ;; compose functions from right to left e.g.
 ;; ((~> (map (curry + 10)) (cons 20) cdr) (range 4)) = '(30 11 12 13)
