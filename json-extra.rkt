@@ -15,6 +15,7 @@
          (only-in racket/format ~a)
          (only-in "util.rkt" pretty-table-str)
          (only-in racket/function identity)
+         racket/contract ;; why need to import even if not invoking json-struct with contracts in this module?
          (for-syntax racket/base
                      syntax/parse
                      (only-in syntax/stx stx-null?)
@@ -165,7 +166,9 @@ map =
 ;; TODO: like Validation applicative functor, collect all failed lookup keys into one error message. nested keys will be separated by dots just like in js, e.g. prop.subprop.key
 #| simultaneously define a struct and functions to parse or export it from or to a json object.
 syntax: (json-struct struct-name (field ...) struct-opts) where
-  field = [id key import export]
+  field = [id opt-contract key import export]
+  opt-contract =
+               | contract?
   key = ; if omitted, assume field name as key when exporting or importing to or from json objects
       | #:as symbol? ; key as appears in json
   import = ; if omitted, then the value is read as-is from json object at appropriate key
@@ -186,6 +189,7 @@ syntax: (json-struct struct-name (field ...) struct-opts) where
 NOTE: result of json export function only satisfies hash?; it does not necessarily satisfy jsexpr?!
 
 * if no export rule is given for a field, then real->jsexpr is implicitly applied
+* `struct/contract` will be used instead of `struct` if any field has a contract. beware that struct/contract accepts a subset of struct's kwargs, and that fileds missing contracts will assume any/c
 
 TIP: you may want to parse an object of unknown shape. suppose it could be one of two shapes, S1 & S2. then we can try to parse it as an S1 and, failing that, try parsing it as an S2, raising an exception if that fails:
 
@@ -199,23 +203,23 @@ TIP: you may want to parse an object of unknown shape. suppose it could be one o
 it's a bit hacky, but it's dependable. TODO: there should be an option so that, if parse fails, then #f is returned instead of a struct.
 |#
 (define-syntax (json-struct stx)
-  (syntax-parse
-   stx
+  (syntax-parse stx
    [(_ name:id
      ((~or* field:id
             (~and field-tuple
                   ;; field options are depth 1
-                  [field:id (~alt (~optional (~seq #:as key))
-                                  ;; import clauses (select 0~1)
-                                  (~optional (~seq #:parse parse))
-                                  (~optional (~seq #:parse-maybe parse-maybe))
-                                  (~optional (~seq #:unsafe-parse unsafe-parse))
-                                  (~optional (~seq #:or otherwise))
-                                  (~optional (~seq #:const const))
-                                  ;; export clauses (select 0~1)
-                                  (~optional (~seq #:export export))
-                                  (~seq #:export-if-truthy (~optional export-if-truthy))) ; optional and takes an optional argument
-                            ...])) ...)
+                  [field:id (~optional contract)
+                   (~alt (~optional (~seq #:as key))
+                         ;; import clauses (select 0~1)
+                         (~optional (~seq #:parse parse))
+                         (~optional (~seq #:parse-maybe parse-maybe))
+                         (~optional (~seq #:unsafe-parse unsafe-parse))
+                         (~optional (~seq #:or otherwise))
+                         (~optional (~seq #:const const))
+                         ;; export clauses (select 0~1)
+                         (~optional (~seq #:export export))
+                         (~seq #:export-if-truthy (~optional export-if-truthy))) ; optional and takes an optional argument
+                   ...])) ...)
               ;; struct opts have depth 0
               (~alt (~optional (~seq #:field->key field->key) #:defaults ([field->key #'identity]))
                     (~optional (~seq #:to-js to-js))
@@ -225,6 +229,8 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
                     ;; passthrough to struct
                     other) ...)
     #:with (kw-constructor ...) (if (attribute constructor) #'(#:constructor-name constructor) #'())
+    #:with defstruct (if (attribute contract) #'struct/contract #'struct)
+    #:with fields (if (attribute contract) #'([field (~? contract any/c)] ...) #'(field ...))
     (let ([import-fn (cond [(not (attribute from-js)) (format-id #'name "jsexpr->~a" (syntax-e #'name))]
                                 [(syntax-e #'from-js) #'from-js]
                                 [else #f])]
@@ -288,7 +294,7 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
                                                                                    #:when (not (equal? 'no-export ev)))
                                                                                   (values ek ev)))))
                                               #'())])
-        #'(begin (struct name (field ...) other ... kw-constructor ...) import-expr ... export-expr ...)))]))
+        #'(begin (defstruct name fields other ... kw-constructor ...) import-expr ... export-expr ...)))]))
 
 ;; TODO: rename. it's now a misnomer; it really ensures that reals are jsexprs.
 ;; needed for e.g. (write-json `(1 2 ,(/ 5 3))), which fails b/c 5/3 isn't a legal json value.

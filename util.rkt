@@ -206,16 +206,8 @@ passing functions of those parameters to the parent constructor, e.g.
 ;; TODO
 ;; e.g. (cond/maybe [(and #f 3) => x (add1 x)] [(and #t 1) => x (sub1 x)]) => 0
 
-;; e.g. (? (> 3 4) (displayln "hi") (displayln "yo") : "pizza")
-(define-syntax (? stx)
-  (syntax-parse stx #:datum-literals (:)
-                [(_ cond t ... : f ...) ; syntax-case can't handle this pattern; it complains about successive rest patterns
-                 #'(if cond (begin t ...) (begin f ...))]))
-
 ;;; miscellaneous basic functions
 
-(define (fmap/maybe f m) (and m (f m)))
-(define ((fmap/maybe/curry f) m) (and m (f m)))
 (define (die s [ec 1]) (displayln s (current-error-port)) (exit ec))
 
 ;; usually used like (∞ (λ () ...))
@@ -1082,13 +1074,3 @@ prints (0 1 2 3) / (cat bat hat skat) / (4 5 6 7) |#
 ;; the hash to the object whence the hash was computed.
 ;; (: hash->table (∀ (s id) (-> (-> s id) (Sequenceof s) (HashTable id s))))
 (define (hash->table ->id ss) (for/hash ([s ss]) (values (->id s) s)))
-
-;; assumes that input is between 0 & 1. returned color has full saturation & value.
-;; example: (plot (list (color-field (λ ([x : Real] [y : Real]) (hue->rgb (/ x 30))) 0 30 0 1 #:samples 100)))
-;; courtesy of https://www.ronja-tutorials.com/post/041-hsv-colorspace/
-;; set range to 5.1 to not loop hue completely. this removes ambiguity of 0 & 1 having the same color.
-;; (: hue->rgb (->* (Real) (Float) (List Integer Integer Integer)))
-(define (hue->rgb h [range 6.])
-  (list (max 0 (min 255 (exact-floor (* 255 (- (abs (- (* range h) 3)) 1)))))
-        (max 0 (min 255 (exact-floor (* 255 (- 2 (abs (- (* range h) 2)))))))
-        (max 0 (min 255 (exact-floor (* 255 (- 2 (abs (- (* range h) 4)))))))))

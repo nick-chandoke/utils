@@ -1,9 +1,6 @@
 #lang racket/base
 
 ;;; rose trees
-;; NB. you'll often need to inst or ann things involving trees.
-;; the type checker misses what appears to be plainly obvious, ordinary
-;; type inference involving trees.
 
 (provide (except-out (all-defined-out) pad-lvls))
 (require (only-in racket/function curry identity const)
@@ -11,16 +8,13 @@
          (only-in racket/format ~a)
          (only-in "util.rkt" map-but-last iterate-until))
 
-;; all trees are proper lists that support common list ops.
+;; a rose tree is a list whose tail's elements are all rose trees.
+;; thus all trees are proper lists that support common list ops.
 ;; for example, last applied to a tree returns the root node's last branch.
 ;; tree's monadic return (η) is `list`.
 ;(define-type (Tree a) (Pairof a (Listof (Tree a))))
 
-;; monomorphic car on trees
-;(: root (∀ (a) (-> (Tree a) a)))
 (define root car)
-
-;(: kids (∀ (a) (-> (Tree a) (Listof (Tree a)))))
 (define kids cdr)
 
 #| (: bfs (∀ (a) (-> (-> a Boolean) (Tree a) (Option (Tree a)))))

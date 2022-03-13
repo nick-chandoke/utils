@@ -52,7 +52,7 @@
                         [running? (system-or-die connect-cmd "failed to ssh into vm even though it's running!")]
                         [else (displayln "starting vm...")
                               (system-or-die (format "VBoxManage startvm ~a --type headless" vm-name) "failed to start vm!")])
-                  (printf "giving ~a for VM's sshd to be ready to accept connections...~n" startup-time)
+                  (printf "giving ~as for VM's sshd to be ready to accept connections...~n" startup-time)
                   (sleep startup-time)
                   (let loop ([successful-connection? (system connect-cmd)]
                              [first-loop? #t])

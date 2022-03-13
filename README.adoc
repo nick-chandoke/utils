@@ -21,6 +21,7 @@ powerline:: display a powerline. also a library, and a dependency of `battery-mo
 r:: like `nohup(1)` but cleaner & more convenient; asynchronously executes a process and discards its stdout & stderr
 rand:: get a truly random number from the terminal
 searchpkgs:: search nix package sets easily & efficiently, with pretty output. designed for nixos users.
+select-workspace:: use `wofi(1)` to move to a `sway(1)` workspace
 set-monitors:: alternative to `kanshi(1)` (since kanshi didn't work for me); applies monitor arrangement config when run
 sway-bg:: kills any currently running `swaybg` process on a given output, then launches a new `swaybg` process for that output
 unique:: `sort -u` but preserves order.
