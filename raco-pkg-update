@@ -1,0 +1,30 @@
+#!/usr/bin/env racket
+#lang racket/base
+(require (only-in racket/string string-join)
+         (only-in racket/system system)
+         (only-in racket/function curry)
+         (only-in racket/dict in-dict))
+(define-syntax-rule (perr s os ...) (fprintf (current-error-port) s os ...))
+(let* ([racket-dir (build-path (find-system-path 'home-dir) ".racket")]
+       [ver-map (for/list
+                    ([k (in-naturals 1)]
+                     [ver-path (sort (filter (curry regexp-match #rx"[0-9]+[.][0-9]+")
+                                             (directory-list racket-dir))
+                                     path<?)])
+                  (cons (number->string k) ver-path))])
+  (if (directory-exists? racket-dir)
+      (if (null? ver-map)
+          (perr "no racket installations found in ~a~n" (path->string racket-dir))
+          (begin
+            (printf "select distribution whose packages you want to install to your current version of racket:~n~a~n"
+                    (string-join (for/list ([(n v) (in-dict ver-map)]) (format "(~a) ~a" n v)) "\n"))
+            (let loop ()
+                 (let ([v (assoc (read-string 1) ver-map)])
+                   (if v
+                       (let* ([inp (open-input-file (build-path racket-dir (cdr v) "pkgs" "pkgs.rktd"))]
+                              [pkgs (read inp)])
+                         (system (string-append "raco pkg install " (string-join (hash-keys pkgs))))
+                         (close-input-port inp))
+                       (begin (perr "invalid version. try again.~n")
+                              (loop)))))))
+      (perr "no such directory ~a~n" (path->string racket-dir))))

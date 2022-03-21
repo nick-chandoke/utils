@@ -1,5 +1,9 @@
 #!/usr/bin/env racket
 #lang racket/base
+
+;; NEXT: rename to sway-ipc, and support e.g. command line sway-ipc get-workspaces, sway-ipc run-command (which in particular would return json status rather than a string like swaymsg would) and all other ipc cmds.
+;; btw, swaywsr (in nixpkgs, https://github.com/pedroscaff/swaywsr) autonames workspaces by their contents.
+
 (require racket/unix-socket
          json
          (only-in racket/port open-output-nowhere)

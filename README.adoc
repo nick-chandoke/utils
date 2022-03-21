@@ -19,6 +19,7 @@ ow:: "open with." interactively browse files (using `fzf(1)`) and open them with
 parrot.hs:: a server that displays your http request
 powerline:: display a powerline. also a library, and a dependency of `battery-monitor`.
 r:: like `nohup(1)` but cleaner & more convenient; asynchronously executes a process and discards its stdout & stderr
+raco-pkg-update:: installs packages from prior versions of racket into your latest version
 rand:: get a truly random number from the terminal
 searchpkgs:: search nix package sets easily & efficiently, with pretty output. designed for nixos users.
 select-workspace:: use `wofi(1)` to move to a `sway(1)` workspace

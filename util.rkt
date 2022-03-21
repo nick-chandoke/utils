@@ -30,6 +30,17 @@
 
 (define (flip f) (λ (x y) (f y x)))
 
+;; this works on a mix of alist & list, which is a more useful structure than strict lists or alists.
+;; as this is a mix of alists & lists, i'll call them "a/lists."
+(define (massoc k s [p equal?])
+  (let lp ([s s])
+    (if (null? s)
+        #f
+        (let ([c (car s)])
+          (if (or (and (pair? c) (p k (car c))) (p k c))
+              c
+              (lp (cdr s)))))))
+
 ;; take or null
 (define (</ n s)
   (define f #f)
@@ -74,23 +85,6 @@
     [(_ x xs ...+) #'(compose1 (~> x) (~> xs ...))]
     [(_ x) #'x]))
 
-;; à la clojure
-;; e.g. (if-let ([i "4525"] [c (string->number i)]) (add1 c) 0)
-;; the binds clause is passed to let* and the last-bound
-;; variable (here #'c) is checked for truthiness.
-;; usually if not always the last-bound variable will be in the positive expression.
-;; all the bound vars are in both the positive and negative branches' scopes.
-(define-syntax (if-let stx)
-  (syntax-parse stx [(_ binds pos neg) (with-syntax ([(_ ... [v . _]) #'binds]) #'(let* binds (if v pos neg)))]))
-
-;; (uncons-let ([h t xs] binds ...) pos neg) expands to (if (null? xs) neg (let* ([h (car xs)] [t (cdr xs)] binds ...) pos)).
-;; pos should contain h and/or t, and neg must contain neither. xs may be an expression, in which case
-;; it's evaluated only once.
-(define-syntax (uncons-let stx)
-  (syntax-parse stx
-    [(_ ([h t xs] binds ...) pos neg)
-     #'(let ([lstg xs]) (if (null? lstg) neg (let* ([h (car lstg)] [t (cdr lstg)] binds ...) pos)))]))
-
 (define-syntax-rule (or-null xs body ...) (if (null? xs) null (begin body ...)))
 
 ;; return first non-null expression, or null if all null
@@ -105,12 +99,8 @@
     [(_ x:id) #'(if (null? x) (error (format "supposedly non-null expression is null: ~a" #'x)) x)]
     [(_ x:expr) #'(let ([y x]) (non-null y))]))
 
-;; adds an arrow operator to cond, and allows else to be used anywhere, any number of times;
-;; the first occurence shorts the computation and returns its associated value; anything after
-;; the first else clause isn't even in the expanded expression.
-;; the form [maybe-thing] is equivalent to [maybe-thing => x x]
-;; e.g. (cond/maybe [(and #f 3) => x (add1 x)] [(and #t 1) => x (sub1 x)]) => 0
-(define-macro (cond/maybe . args)
+;; defmacro def left here for easy impl in other lisps
+#;(define-macro (cond-let . args)
   (let loop ([rst args])
     (if (null? rst)
         '(void)
@@ -123,6 +113,23 @@
                                     (begin ,@(cddr with-arrow?))
                                     ,(loop (cdr rst))))]
                 [else `(if ,(car clause) ,(cadr clause) ,(loop (cdr rst)))])))))
+
+#| cond-let is to clojure's if-let as cond is to if.
+   adds an arrow operator to cond, and allows `else` to be used anywhere, any number of times;
+   the first occurence shorts the computation and returns its associated value; anything after
+   the first `else` clause isn't even in the expanded expression.
+   e.g. (cond-let [(and #f 3) => x (add1 x)]
+                  [(values 4 6) => (x y) (>= x y) (sub1 (+ x y))]
+                  [(symbol? "cat") 20]
+                  [else 3])
+|#
+(define-syntax (cond-let stx)
+  (syntax-parse stx
+    [(_) #'(void)]
+    [(_ [(~literal else) e ...+] . _) #'(begin e ...)]
+    [(_ [g (~literal =>) (x ...) p e ...+] . rst) #'(let-values ([(x ...) g]) (if p (begin e ...) (cond-let . rst)))]
+    [(_ [g (~literal =>) x e ...+] . rst) #'(let ([x g]) (if x (begin e ...) (cond-let . rst)))]
+    [(_ [p e ...+] . rst) #'(if p (begin e ...) (cond-let . rst))]))
 
 ;; e.g. (until ([c 0]) (>= c 10) (displayln c) (add1 c))
 (define-syntax-parse-rule (until vars cond a ...+ upd)
@@ -212,18 +219,6 @@ passing functions of those parameters to the parent constructor, e.g.
 
 ;; usually used like (∞ (λ () ...))
 (define (∞ f) (f) (∞ f)) ;; wrapping f-in-the-body in λ, i.e. (define (∞ f) (λ () (f)) (∞ f)), is NOT an alternative to wrapping f-as-a-parameter in λ! wrapping in the body will cause non-termination.
-
-;;; filesystem
-
-;; (: read-from-process (-> String String))
-(define (read-from-process p)
-  (match (process/ports #f #f #f p)
-    [(list source sink _pid err ask)
-     (ask 'wait)
-     (begin0 (port->string source)
-         (close-input-port source)
-         (close-output-port sink)
-         (close-input-port err))]))
 
 ;;; iterators & sequences
 
@@ -533,9 +528,8 @@ loop example (effectively (for-each displayln (range 2 10))):
   (let ([len (vector-length v)])
     (let loop ([pos 0])
       (when (< pos len)
-        (if-let ([new-val (f (vector-ref v pos))])
-                (vector-set! v pos new-val)
-                (loop (add1 pos)))))))
+        (cond-let [(f (vector-ref v pos)) => new-val (vector-set! v pos new-val)]
+                  [else (loop (add1 pos))])))))
 
 ;; (: vector-setf*! (∀ (a) (-> (Mutable-Vectorof a) (-> a a) * Void)))
 (define (vector-setf*! v . fs)
