@@ -1,51 +1,5 @@
-#!/usr/bin/env racket
-#lang racket/base
-
-;; NEXT: rename to sway-ipc, and support e.g. command line sway-ipc get-workspaces, sway-ipc run-command (which in particular would return json status rather than a string like swaymsg would) and all other ipc cmds.
-;; btw, swaywsr (in nixpkgs, https://github.com/pedroscaff/swaywsr) autonames workspaces by their contents.
-
-(require racket/unix-socket
-         json
-         (only-in racket/port open-output-nowhere)
-         (only-in racket/string string-join string-trim)
-         (only-in racket/system system*))
-
-#| ungodly deplorable sway ipc behavior:
- * sway uses 100% cpu if a connection to SWAYSOCK is left open
- * sway does not give ANY response if we give it an improper ipc bytestring
-sway does not close the socket after giving a response despite us closing the socket on our end. maybe this is the expected behavior of sockets. idk yet.
-|#
-
-;; doesn't work. why the fuck not? and why the fuck isn't this already
-;; implemented in racket/port?
-;; lucky thing i don't need it (instread i use read-json to determine when
-;; to stop reading.)
-;; for further research, see read-some-bytes! in
-;; racket/src/io/port/read-and-peek.rkt
-#;(define (read-all-bytes-avail in)
-    (define b (make-bytes 100))
-    (let loop ()
-      (let ([r (read-bytes-avail!* b)])
-        (if (or (eof-object? r) (= 0 r))
-            #""
-            (bytes-append b (loop))))))
-
-(module+ main
-  (define-values (in out) (unix-socket-connect (getenv "SWAYSOCK")))
-  (void (write-bytes (bytes-append #"i3-ipc" #"\x00\x00\x00\x00\x01\x00\x00\x00") out))
-  (close-output-port out)
-  ;; ensure that program dies if open too long, to prevent cpu from going to 100%
-  (define j #f)
-  (define st (thread (λ ()
-                       (void (read-bytes 14 in)) ; 14's the magic number of bullshit bytes to discard! :)
-                       (set! j (read-json in))
-                       (close-input-port in))))
-  (void (when (sync/timeout 1 (thread-dead-evt st)) ; give st 1s to finish
-          (parameterize ([current-error-port (open-output-nowhere)])
-            (define os (open-output-string))
-            (parameterize ([current-input-port (open-input-string (string-join (sort (map (λ (m) (hash-ref m 'name)) j) string<?) "\n"))]
-                           [current-output-port os])
-              (system* (find-executable-path "wofi") "-GibSdmenu" "-l2" "-H100" "-p" "select workspace"))
-            (let ([ws (string-trim (get-output-string os))])
-              (unless (string=? ws "")
-                (system* (find-executable-path "swaymsg") "workspace" ws)))))))
+#!/bin/sh
+ws="$(sway-ipc get-workspaces | wofi -GibSdmenu -l2 -H100 -p 'select workspace')"
+if test -n "$ws"
+  swaymsg workspace ws
+fi

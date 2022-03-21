@@ -1,0 +1,52 @@
+#!/usr/bin/env racket
+#lang racket/base
+
+;; see sway-ipc(7)
+;; btw, swaywsr (in nixpkgs, https://github.com/pedroscaff/swaywsr) autonames workspaces by their contents.
+
+(require racket/unix-socket json racket/match srfi/2 (only-in racket/string string-join))
+(provide (except-out (all-defined-out) sway-ipc0 sway-ipc))
+
+#| ungodly deplorable sway ipc behavior:
+ * sway uses 100% cpu if a connection to SWAYSOCK is left open
+ * sway does not give ANY response if we give it an improper ipc bytestring
+sway does not close the socket after giving a response despite us closing the socket on our end. maybe this is the expected behavior of sockets. idk yet.
+|#
+
+;; main helper
+(define (sway-ipc0 bs)
+  (let-values ([(in out) (unix-socket-connect (getenv "SWAYSOCK"))])
+    (void (write-bytes (bytes-append #"i3-ipc" bs) out))
+    (close-output-port out) ; needed for sway to accept & parse our message, and begin responding
+    ;; ensure that program dies if open too long (1s), to prevent cpu from going to 100%
+    (define j #f)
+    (define st (thread (λ ()
+                         (void (read-bytes 14 in)) ; 14's the magic number of bullshit bytes to discard!
+                         (set! j (read-json in))
+                         (close-input-port in))))
+    (and (sync/timeout 1 (thread-dead-evt st)) j)))
+
+(define (sway-ipc i [p #f])
+  (if p
+      (void) ; TODO
+      (sway-ipc0 (bytes 0 0 0 0 i 0 0 0))))
+
+;(define (run-command cmd)           (sway-ipc 0 cmd))
+(define (get-workspaces)            (sway-ipc 1))
+(define (subscribe evts)            (and-let* ([x (sway-ipc 2 evts)]) (hash-ref x 'success)))
+(define (get-outputs)               (sway-ipc 3))
+(define (get-tree)                  (sway-ipc 4))
+(define (get-marks)                 (sway-ipc 5))
+(define (get-bar-config [barid #f]) (sway-ipc 6))
+(define (get-version)               (sway-ipc 7))
+(define (get-binding-modes)         (sway-ipc 8))
+(define (get-config)                (sway-ipc 9))
+(define (send-tick [pay #f])        (sway-ipc 10))
+(define (get-binding-state)         (and-let* ([x (sway-ipc 12)]) (hash-ref x 'name)))
+(define (get-inputs)                (sway-ipc 100))
+(define (get-seats)                 (sway-ipc 101))
+
+(module+ main
+  (match (vector->list (current-command-line-arguments))
+         [(list "get-workspaces") (display (string-join (sort (map (λ (m) (hash-ref m 'name)) (get-workspaces)) string<?) "\n"))]
+         [else (displayln "invalid command. see source for valid commands." (current-error-port))]))

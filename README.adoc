@@ -22,9 +22,10 @@ r:: like `nohup(1)` but cleaner & more convenient; asynchronously executes a pro
 raco-pkg-update:: installs packages from prior versions of racket into your latest version
 rand:: get a truly random number from the terminal
 searchpkgs:: search nix package sets easily & efficiently, with pretty output. designed for nixos users.
-select-workspace:: use `wofi(1)` to move to a `sway(1)` workspace
+select-workspace:: use `wofi(1)` and `sway-ipc` to move to a `sway(1)` workspace
 set-monitors:: alternative to `kanshi(1)` (since kanshi didn't work for me); applies monitor arrangement config when run
 sway-bg:: kills any currently running `swaybg` process on a given output, then launches a new `swaybg` process for that output
+sway-ipc:: simple racket lib & cmdline interface to `sway-ipc(7)`
 unique:: `sort -u` but preserves order.
 
 .libraries
