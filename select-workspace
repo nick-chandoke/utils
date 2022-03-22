@@ -1,5 +1,5 @@
 #!/bin/sh
 ws="$(sway-ipc get-workspaces | wofi -GibSdmenu -l2 -H100 -p 'select workspace')"
-if test -n "$ws"
+if test -n "$ws"; then
   swaymsg workspace ws
 fi
