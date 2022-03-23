@@ -13,6 +13,7 @@
 ;; TODO:
 ;; include auto-interactivity based on program name.
   ;; sometimes leave fzf open while an interactive child process runs (e.g. mplayer)
+;; fails when file name contains single quotes. might also fail for other particular characters
 
 ;; e.g. (P #f (λ (x) (P x port->string "tr h z")) "echo" "hi")
 ;; if you want synchronous processes, set current input/output ports, and use system*.

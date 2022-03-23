@@ -208,7 +208,7 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
      ((~or* field:id
             (~and field-tuple
                   ;; field options are depth 1
-                  [field:id (~optional contract)
+                  [field:id (~optional (~and (~not contract:keyword) contract))
                    (~alt (~optional (~seq #:as key))
                          ;; import clauses (select 0~1)
                          (~optional (~seq #:parse parse))
@@ -229,8 +229,8 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
                     ;; passthrough to struct
                     other) ...)
     #:with (kw-constructor ...) (if (attribute constructor) #'(#:constructor-name constructor) #'())
-    #:with defstruct (if (attribute contract) #'struct/contract #'struct)
-    #:with fields (if (attribute contract) #'([field (~? contract any/c)] ...) #'(field ...))
+    #:with defstruct (if (ormap identity (attribute contract)) #'struct/contract #'struct)
+    #:with fields (if (ormap identity (attribute contract)) #'([field (~? contract any/c)] ...) #'(field ...))
     (let ([import-fn (cond [(not (attribute from-js)) (format-id #'name "jsexpr->~a" (syntax-e #'name))]
                                 [(syntax-e #'from-js) #'from-js]
                                 [else #f])]
