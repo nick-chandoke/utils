@@ -1,5 +1,8 @@
 #!/bin/sh
-# usage: sway-bg OUTPUT IMAGE_PATH
+if test $# -eq 0; then
+  echo "usage: sway-bg OUTPUT IMAGE_PATH"
+  exit 0
+fi
 p="$(ps -eo '%p %c %a' | awk '$2=="swaybg"&&$5=="'"$1"'"{print($1)}')"
 if test -n "$p"; then kill "$p"; fi
 # to match properly, -o must be the first option.

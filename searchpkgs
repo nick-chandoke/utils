@@ -15,9 +15,10 @@
 (require "json-extra.rkt"
          srfi/2
          (only-in racket/list make-list append*)
-         (only-in racket/string string-split string-join)
+         (only-in racket/string string-split string-join string-trim)
          (only-in racket/cmdline command-line) ;; fortunately its type instantiation is irrelevant here
          (only-in racket/system process*/ports system*) ;; read from nix-env -qaP
+         (only-in racket/port with-output-to-string)
          (only-in racket/match match) ;; used against process*/ports' returned ports
          (only-in db query query-rows disconnect)
          (only-in db/sqlite3 sqlite3-available? sqlite3-connect))
@@ -45,11 +46,11 @@
 
 (define (% s) (if exact? s (format "%~a%" s)))
 
-(define-syntax-rule (pad s l) (string-append s (make-string l #\space)))
+(define (pad s l) (string-append s (make-string l #\space)))
 
 (define col2-max-len (let ([tput (find-executable-path "tput")])
                        (if tput
-                           (λ (col1-len) (- (P (list tput "cols") read) col1-len 6)) ; NEXT: why 6 not 2?
+                           (λ (col1-len) (- (string->number (string-trim (with-output-to-string (λ () (system* tput "cols"))))) col1-len 6)) ; why 6 instead of 2?
                            60)))
 
 ;; if we want to display any more, just export to html, and let browser lay it out as a <table>
@@ -94,7 +95,9 @@
                                                              (cons padded-name-ver (cons padded-homepage (make-list (- desc/wb-len 2) (make-string col1-len #\space))))
                                                              (list padded-name-ver padded-homepage))])
         (for ([x padded-name-ver-homepage-list] [y desc/wb])
-          (printf "│~a │ ~a│~n" x (pad y (- (+ 1 col2-max-len) (string-length y)))))
+          ;; TODO: when, after calling wrap/WORD, if any WORD is longer than col2's len, then
+          ;; this padding length is negative. max 0 is used to avoid crashing, but instead produces ugly output
+          (printf "│~a │ ~a│~n" x (pad y (max 0 (- (+ 1 col2-max-len) (string-length y))))))
         (if (< i final-index)
             (displayln (string-append "├" (make-string (+ 1 col1-len) #\─) "┼" (make-string (+ col2-max-len 2) #\─) "┤"))
             (displayln (string-append "└" (make-string (+ 1 col1-len) #\─) "┴" (make-string (+ col2-max-len 2) #\─) "┘"))))]))))

@@ -1,9 +1,11 @@
 #!/usr/bin/env racket
 #lang racket/base
 ;; "run." more convenient & cleaner version of nohup
-(require (only-in racket/system process*))
+;; TODO: why does not work with swaybg? currently no effect. using system* instead of process* affects
+;; but is not a bg proc; ^C kills. 
+(require (only-in racket/system process*) (only-in racket/port open-output-nowhere))
 (module+ main
-  (void (with-output-to-file "/dev/null" #:exists 'append
-        (λ () (parameterize ([current-error-port (current-output-port)])
+  (void (parameterize ([current-output-port (open-output-nowhere)]
+                       [current-error-port (open-output-nowhere)])
                             (apply process* (find-executable-path "nohup")
-                                   (vector->list (current-command-line-arguments))))))))
+                                   (vector->list (current-command-line-arguments))))))
