@@ -1,0 +1,49 @@
+# TODO: add your preferred text editor, browser, window manager, video player, picture viewer, programming langs, and terminal emulator
+# TODO: pacman didn't find: obexftp, gpg, massren
+
+## required for a stable system; omit only if you know what you're doing
+base linux efibootmgr efivar
+
+## bootloaders (if you're doing a custom bootloader setup)
+# refind-efi
+# grub
+
+## required when installing on bare metal; useless when installing on a VMs
+linux-firmware
+
+## X
+# xorg-xinit # required for all x11 wm's. the `xorg` package set installs more than necessary
+# xorg-server xorg-server-common xorg-setxkbmap xorg-xev xorg-xinput xorg-xkbcomp xorg-xkbutils xorg-xkill xorg-xrandr
+
+## practically essential admin programs
+sudo man-pages man-db dhcpcd wpa_supplicant iw wavemon traceroute netcat
+obexftp
+bluez bluez-tools bluez-utils # hopefully one of these includes bluetoothctl(1)
+pulseaudio-bluetooth
+
+## common admin programs
+lsof
+psmisc # provides fuser, which lists procs that currently have an open handle to a given file
+file
+htop
+
+## common programs
+# gpg
+pinentry # gpg uses pinentry to read passwords from stdin in the terminal
+gcc make # gnumake. different from cmake
+wget curl
+git
+ncdu # curses disk usage summarizer
+gucharmap
+
+pulseaudio
+pulseaudio-alsa
+pavucontrol # GUI for pulseaudio
+pamixer     # TUI for pulseaudio
+
+ripgrep
+massren
+
+p7zip
+gnupg
+brightnessctl
