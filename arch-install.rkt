@@ -1,5 +1,6 @@
 #lang racket/base
 
+(require "wifi.rkt" "interactive.rkt" (only-in "json-extra.rkt" filter/json))
 (provide (all-defined-out))
 
 #| TODO's:
@@ -19,16 +20,13 @@
 |#
 
 (require (only-in racket/string string-prefix? string-contains? string-join string-split string-trim)
-         (only-in racket/function identity)
          (only-in racket/port port->lines)
          (only-in racket/bool symbol=?)
-         (only-in racket/format ~a)
          (only-in racket/file fold-files copy-directory/files)
          (only-in racket/system system system/exit-code)
-         (only-in racket/list append-map make-list split-at split-at-right drop filter-map flatten last drop-right)
+         (only-in racket/list append-map drop filter-map flatten last drop-right)
          (only-in racket/path path-get-extension file-name-from-path path-has-extension?)
-         json
-         (for-syntax racket/base syntax/parse))
+         json)
 
 #| the term "action" shall refer to a procedure that returns a non-zero integer
    or a string to represent an error (non-zero exit code or error message), and
@@ -36,145 +34,6 @@
 
 * remember to disable secure boot (in your motherboard's uefi) before booting the arch live image!
 |#
-
-;; PRETTY PRINT HELPER FUNCTIONS
-
-;; like in-slice (in racket/sequence) but supports padding the last slice.
-;; if pad, then the last row will be padded on the right so that it's the given length
-(define (chunks-of i s #:pad [pad #f])
-  (let loop ([s s])
-    (if (< (length s) i)
-        (list (if pad
-                  (append s (make-list (- i (length s)) pad))
-                  s))
-        (let-values ([(a b) (split-at s i)])
-          (if (null? b)
-              (list a)
-              (cons a (loop b)))))))
-
-;; prints a table of data (converted to strings by ~a) with columns aligned
-(define (pp-table xss)
-  (if (null? xss)
-      (void)
-      (let ([col-sizes (apply foldr (λ X (let-values ([(ss acc) (split-at-right X 1)]) (cons (foldl (λ (s m) (max (string-length (~a s)) m)) 0 ss) (car acc)))) '() xss)])
-        (for-each (λ (xs) (for-each (λ (x s) (let ([x (~a x)]) (printf "~a~a " x (make-string (- s (string-length x)) #\space)))) xs col-sizes) (printf "~n")) xss))))
-
-;; guaranteed to have no more than the given number of columns;
-;; on certain edge cases there may be one fewer than the specified number of columns.
-(define (print-choices choices [cols 5])
-  (pp-table (chunks-of cols (for/list ([k (in-naturals 1)] [i choices]) (format "~a. ~a" k i)) #:pad "")))
-
-;; OTHER HELPER FUNCTIONS
-
-;; lps : ((string . pred)).
-;; returns (values matched-items unmatched-lps)
-;; e.g. (find-multiple (range 10) `(("=5" . ,(curry = 5)) ("|2" . ,even?) (">40" . ,(λ (x) (> x 40)))))
-;; returns (values (set '("|2" . 6) '("=5" . 5)) '((">40" . #<procedure>)))
-;; UNUSED; the code that used it was discarded.
-#;(define (find-multiple xs lps)
-  (let loop ([matched (set)] [lps lps] [xs xs])
-    (cond [(null? lps) (values matched lps)]
-          [(null? xs) (values matched lps)]
-          [else (if ((cdar lps) (car xs))
-                    (loop (set-add matched (cons (caar lps) (car xs))) (cdr lps) (cdr xs))
-                    (loop matched lps (cdr xs)))])))
-
-;; PROMPT FUNCTIONS
-
-;; select one/some from many displayed options
-;; returns #f if no choice taken, as signaled by ^C
-;; if #:return-index? #t, then returns the index of the selected item rather
-;; than the value of the item itself.
-(define (select prompt choices [print-choices print-choices] #:return-index? [return-index? #f])
-  (let ([m (for/hash ([k (in-naturals 1)] [c choices]) (values k c))])
-    (printf "~a~n~n" prompt)
-    (print-choices choices)
-    (printf "~nselect a choice by number: ")
-    (with-handlers ([exn:break? (λ (_) (printf "\n") #f)])
-      (let loop ()
-        (let ([index (let ([s (read-line)]) (if (eof-object? s) s (string->number s)))])
-          (cond [(eof-object? index) #f] ;; treat ^D as ^C
-                [index (let ([selection (hash-ref m index #f)])
-                         (if selection
-                             (if return-index?
-                                 index
-                                 selection)
-                             (begin (displayln "invalid index. try again." (current-error-port))
-                                    (loop))))]
-              [else (begin (displayln "please enter a number." (current-error-port))
-                           (loop))]))))))
-
-;; select a text input (single line)
-;; callback is an action that accepts the user's input string
-;; prompt is itself an action
-(define ((prompt p callback [default #f]))
-  (display p)
-  (with-handlers ([exn:break? (λ (_) (printf "\n") #f)])
-    (callback (let ([l (read-line)])
-              (if (string=? "" l)
-                  default
-                  l)))))
-
-;; list of filesystem objects that descend from a given directory and optionally match
-;; a given predicate. given directory is not included in returned list.
-;; return value: list of paths represented by strings; these strings do not begin with
-;; the argument directory's path, e.g. (descendants "path/to/dir") would return '("A.doc")
-;; instead of "path/to/dir/A.doc". this behavior was chosen particularly for using
-;; descendants with `select`.
-;; t is of '(file dir link)
-;; if #:basename? #t then only basename is put into list rather than path relative to argument directory.
-(define (descendants d [pred (λ (p t) #t)] #:basename? [basename? #f])
-  (unless (directory-exists? d)
-    (error (format "[ERROR] invalid assumption; actually ~a does NOT exist" d)))
-  (let ([wl (string-length d)])
-    (fold-files (λ (p t l)
-                      (if (pred p t)
-                          ;; wp is path relative to d
-                          (let ([wp (substring (path->string p) wl)])
-                            (if (string=? "" wp)
-                                l
-                                (cons (if basename?
-                                          (path->string (file-name-from-path p))
-                                          (substring wp 1)) l)))
-                          l))
-                '()
-                d)))
-
-;; APPLICATION-SPECIFIC FUNCTIONS
-
-;; convenient/terse action definition.
-;; errmsg is printed in addition to the generic error message if sys0 returns non-0 exit code.
-;; if errmsg is a string, then that string is returned; if it's not, then the string "<cmd> failed" is returned.
-;; if print-err?, error string is printed.
-(define ((sys0 cmd [errmsg #f] #:print-err? [print-err? #f] #:required? [required? #f]))
-  (with-handlers ([exn:break? (λ (_) (if required? #f 0))])
-    (if (= 0 (system/exit-code cmd))
-        0
-        ((if print-err? displayln identity) (if (string? errmsg)
-                                                errmsg
-                                                (format "`~a` failed." cmd))))))
-
-;; shorts when any optionally-bound item in sequence is a non-0 integer;
-;; upon such an integer, 0-let*/seq returns that value.
-;; e.g. (0-let*/seq [x <- 4.6] [y <- (+ x 5.0)] (displayln "here") [z <- (if (even? (exact-floor y)) 1 0)] (displayln "finished"))
-;; prints "here", then "finished", and returns 0; if x were change to 4, then evaluation would stop and 4 would be returned.
-(define-syntax (0-let*/seq stx)
-  (syntax-parse stx #:datum-literals (<-)
-    [(_) #'0] ;; everything was done successfully; return 0.
-    [(_ (~or [i:id <- e] e) xs ...)
-     (if (attribute i)
-         #'(let ([i e]) (if (or (and (exact-integer? i) (not (= 0 i))) (string? i)) i (0-let*/seq xs ...)))
-         #'(let ([E e]) (if (or (and (exact-integer? E) (not (= 0 E))) (string? E)) E (0-let*/seq xs ...))))]))
-
-(define (write-file path str) (with-output-to-file #:exists 'truncate/replace path (λ _ (display str))))
-
-(define (read-proc cmdline)
-  (let ([os (open-output-bytes)] [os-err (open-output-bytes)])
-    (parameterize ([current-output-port os] [current-error-port os-err])
-      (let ([ec (system/exit-code cmdline)])
-        (if (= 0 ec)
-            (get-output-string os)
-            `(,ec . ,(get-output-string os-err)))))))
 
 ;; like ((sys0 "mount ...")) but returns 0 if device already mounted at given mountpoint
 (define (mount dev mp)
@@ -185,77 +44,6 @@
         (cond [(= 0 ec) 0]
               [(string-contains? errout "already mounted") 0]
               [else errout])))))
-
-(define (setup-wifi)
-  (0-let*/seq 
-   ;; check that device is up: not soft blocked nor hard blocked, then ip set link up
-   (if (find-executable-path "rfkill")
-       (0-let*/seq ((sys0 "rfkill unblock wifi"))
-                   (let ([y (filter/json (λ (x) (and (hash? x) (equal? "wlan" (hash-ref x 'type #f))))
-                                         (string->jsexpr (read-proc "rfkill -Jo type,hard")))])
-                     (if (null? y)
-                         (displayln "no wifi device found (rfkill(8) didn't provide a device with type 'wlan'); cannot guarantee that any wifi device is not hard-blocked")
-                         (let ([hard-blocked-devs (filter (λ (h) (equal? "blocked" (hash-ref h 'hard #f))) y)])
-                           (unless (null? hard-blocked-devs)
-                             (printf "the following devices are hard-blocked: ~a; if any of these is the wifi device that you want to use, please unblock it, then press <enter> to continue.~n" hard-blocked-devs)
-                                   (void (read-line)))))))
-       (displayln "[INFO] rfkill is not installed / in PATH. cannot guarantee that wifi is neither hard- nor soft-blocked."))
-   (let* ([wifi-dev (let* ([devs (string->jsexpr (read-proc "ip -j link show"))] ;; assuming (not (list? devs)) 'cause i'm lazy and it'll probably work.
-                           [ws (filter (λ (h) (string-prefix? (hash-ref h 'ifname) "w")) devs)])
-                      (cond [(= 1 (length ws)) (let ([ifn (hash-ref (car ws) 'ifname)])
-                                                 (printf "[INFO] assuming ~a as the wifi card~n" ifn)
-                                                 (list ifn))]
-                            [(null? devs) "no network devices detected! aborting."]
-                            ;; if #ws > 1 then select from assumedly-wireless devices
-                            [else (let ([sdev (select "select wireless device:" (map (λ (h) (hash-ref h 'ifname)) (if (null? ws) devs ws)))])
-                                    (if sdev (list sdev) "no device selected. aborting network config."))]))]
-          ;; TODO: mkdir /mnt/etc/ if needed before trying to write to /mnt/etc/wpa_supplicant.conf
-          [start-wpa-supplicant (sys0 (format "wpa_supplicant -B -i ~a -c /mnt/etc/wpa_supplicant.conf" (if (pair? wifi-dev) (car wifi-dev) 'dummy)))])
-     ;; connect to network; use /mnt/etc/wpa_supplicant.conf if available; else generate that file by connecting to a network
-     (if (string? wifi-dev)
-         wifi-dev
-         ;; else wifi-dev is a singleton list
-         (0-let*/seq ((sys0 (format "ip link set ~a up" (car wifi-dev))))
-                     [scan-results <- (let rec ()
-                                        (let ([v (read-proc (format "iw ~a scan" (car wifi-dev)))])
-                                          (if (pair? v)
-                                              (if (= -16 (car v))
-                                                  (begin (displayln "device busy. retrying...")
-                                                         (sleep 2)
-                                                         (rec))
-                                                  (cdr v))
-                                              (list v))))]
-                             (if (find-executable-path "wpa_supplicant")
-                                 (begin (if (file-exists? "/mnt/etc/wpa_supplicant.conf")
-                                            (displayln "using config from /mnt/etc/wpa_supplicant.conf.")
-                                            (write-file "/mnt/etc/wpa_supplicant.conf"
-                                                        (read-proc (string-append "wpa_passphrase "
-                                                                                  (select "select a wireless network to connect to:"
-                                                                                          ;; yes, screenscraping iw(8) despite it explicitly saying not to do so. currently
-                                                                                          ;; no iw library nor json output is available, though it's planned; see
-                                                                                          ;; <https://www.spinics.net/lists/linux-wireless/msg202689.html>.
-                                                                                          ;; the source for iw/scanning is too complex to make a wrapper for it; see
-                                                                                          ;; <https://fossies.org/linux/iw/scan.c>.
-                                                                                          (filter-map (λ (s) (let ([m (regexp-match #px"SSID: (.+)$" s)])
-                                                                                                               (and m (cadr m))))
-                                                                                                      (string-split (car scan-results) "\n")))))))
-                                        (start-wpa-supplicant))
-                                 "wpa supplicant is not installed. idk how to connect to any network without it.")))) 
-   ;; finally, test for internet connectivity
-   ((sys0 "ping -c 1 archlinux.org" "can't ping archlinux.org"))))
-
-(define (fold-json f j)
-  (let go ([j j])
-    (f j (map go (cond [(hash? j) (hash-values j)]
-                       [(list? j) j]
-                       [else '()])))))
-
-;; inefficient (uses `flatten`) tree search
-(define (filter/json p j) (fold-json (λ (r acc) (if (p r) r (flatten acc))) j))
-
-(define (mkdir d) (unless (directory-exists? d) (make-directory d)))
-
-;; MAIN PROGRAM
 
 ;; TODO: if fstype = null, then suggest formatting it via mkfs.btrfs or mkfs.ext4.
 ;; get fstype from fdisk -l; lsblk has said null whereas fdisk said "Linux"; still i
@@ -410,7 +198,7 @@
                                                   (displayln "skipping this partition"))))))
                                     (when fstab-mnt?
                                       (displayln "i see that you've already gone through some of the install process. run:\n\n* arch-chroot /mnt\n* install-arch STAGE2\n\nthen carry on." )))))
-    ("setup wifi" . ,setup-wifi)))
+    ("setup wifi" . ,(λ _ (parameterize ([wpa-supplicant-config-path "/mnt/etc/wpa_supplicant.conf"]) (setup-wifi))))))
 
 ;; set arch options (e.g. enable/configure services, set basic admin stuff)
 (define stage/config
@@ -445,10 +233,11 @@
     ;; TODO?: if lvm, sysenc, or raid, update mkinitcpio.conf(5) then run mkinitcpio -P
     ("set the root password" . ,(sys0 "passwd"))
     ;; not putting dhcpcd is sys0 b/c they will fail if user hasn't installed dhcpcd, but are practically guaranteed to succeed if they have.
+    ;; dhcpcd is checked in setup-wifi. do i need it here? needed for ethernet, too. should it be here and/or before pacstrap?
     ("configure network" . ,(λ _ (system "systemctl enable dhcpcd") ;; needed only after arch-chroot
                                  (system "systemctl start dhcpcd")
                                  (when (find-executable-path "wpa_supplicant")
-                                   (system "systemctl enable wpa_supplicant"))))
+                                   (system "systemctl enable wpa_supplicant")))) ; no need to start; it's already been started in stage/init
     ("create user" . ,(prompt "username: " (λ (user) (and user
                                                             (0-let*/seq ((sys0 (format "useradd -G wheel -d /home/~a -m -s /bin/bash ~a" user user)
                                                                                (format "couldn't create user.")))

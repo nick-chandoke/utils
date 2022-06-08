@@ -28,6 +28,19 @@
          srfi/2
          syntax/parse/define)
 
+;; to read from processes, use system*; see §system processes & ipc in racket notes
+;; e.g. (P #f (λ (x) (P x port->string "tr h z")) "echo" "hi")
+;; if you want synchronous processes, set current input/output ports, and use system*.
+;; TODO: i don't use this function at all; i use its body explicitly in order to
+;; close the input port later. make that more elegant
+#;(define (P in f cmd . args)
+  (match (apply process*/ports #f in 'stdout (find-executable-path cmd) args)
+         [(list output input _pid _err ask)
+          (ask 'wait)
+          (begin0 (f output)
+                  (close-input-port output)
+                  (when input (close-output-port input)))]))
+
 (define (flip f) (λ (x y) (f y x)))
 
 ;; this works on a mix of alist & list, which is a more useful structure than strict lists or alists.
@@ -65,6 +78,8 @@
     (cond [(null? args) null]
           [(null? (cdr args)) (raise-argument-error 'alist "even number of arguments" args0)]
           [else (let-values ([(a b) (safe-split-at args 2)]) (cons (apply cons a) (loop b)))])))
+
+(define (list-transpose xss) (apply map (lambda X (apply list X)) xss))
 
 ;; TODO: use in-syntax to replace all ()'s.
 ;; compose functions from right to left e.g.

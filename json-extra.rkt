@@ -14,6 +14,7 @@
          (only-in racket/set set-member?)
          (only-in racket/format ~a)
          (only-in "util.rkt" pretty-table-str)
+         (only-in racket/list flatten)
          (only-in racket/function identity)
          racket/contract ;; why need to import even if not invoking json-struct with contracts in this module?
          (for-syntax racket/base
@@ -479,3 +480,12 @@ Example Usage:
                                  pmap))))])
             (values (car p) (cdr p))))
         (error (format "table->json: specified key field \"~a\" not found" key-field)))))
+
+(define (fold-json f j)
+  (let go ([j j])
+    (f j (map go (cond [(hash? j) (hash-values j)]
+                       [(list? j) j]
+                       [else '()])))))
+
+;; inefficient (uses `flatten`) tree search
+(define (filter/json p j) (fold-json (λ (r acc) (if (p r) r (flatten acc))) j))
