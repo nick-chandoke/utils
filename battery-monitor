@@ -5,18 +5,22 @@
 
 ;; triggers an alert each time battery crosses below 10%
 ;; TODO: use wall(1) when not running in a graphical session
+;; TODO: after suspending, keeps suspending, probably until >7% (though possibly past that.) resist this if plugged in.
+;; TODO: why were there multiple instances of this running? run a daemon that tracks the number of battery-monitor processes, to alert
+;; me when the number exceeds 1.
 
 (define alerted? #f)
 (define (system* p . args) (apply SS (find-executable-path p) args))
 
-(let forever ()
-  (void
-    (let ([bamt (get-charge%)])
-      (cond [(>= bamt 10) (set! alerted? #f)]
-            [(and (not alerted?) (< bamt 10)) (system* "notify-send" "-u" "critical" "LOW BATTERY" (format "~a%" (floor bamt)))
-                                              (system* "mpv" "--vid=no" "/home/nic/programming/ssbm-challenger.mp3")
-                                              (set! alerted? #t)]
-            [(and alerted? (< bamt 5)) (system* "systemctl" "suspend")
-                                       (set! alerted? #t)])))
+(let repeat ()
+  (void (let ([bamt (get-charge%)])
+          (cond [(>= bamt 10) (set! alerted? #f)]
+                [(and (not alerted?) (< bamt 10))
+                 (system* "notify-send" "-u" "critical" "LOW BATTERY" (format "~a%" (floor bamt)))
+                 (system* "mpv" "--vid=no" "--volume=50" "/home/nic/programming/ssbm-challenger.mp3")
+                 (set! alerted? #t)]
+                [(and alerted? (< bamt 7) (not (plugged-in?)))
+                 (set! alerted? #t)
+                 (system* "systemctl" "suspend")])))
   (sleep 60)
-  (forever))
+  (repeat))

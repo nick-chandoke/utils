@@ -32,9 +32,24 @@
                           (system (string-append "swaymsg output " o " disable"))))
               (lp (cdr oss))))))))
 
-;; only 'transform' changes when i physically roteate monitors
-(setoutputs '["HDMI-A-2 enable transform 90 position 0 0"
-              "HDMI-A-1 enable transform 0 position 1080 112"]
+(define given-args (vector->list (current-command-line-arguments)))
+(define avail-args '(("b" "laptop below horiz monitor")))
+
+(unless (null? (set-intersect '("-h" "--help") given-args))
+  (displayln "available args:")
+  (for ([A avail-args]) (apply printf "  ~a: ~a~n" A))
+  (exit))
+
+;; only 'transform 90' changes when i physically roteate monitors
+(setoutputs '["HDMI-A-1 enable transform 90 position 0 0" ;; left
+              "HDMI-A-2 enable position 1080 112" ;; right
+              "eDP-1    enable position 1080 1192"] ;; 112 + 1080
+
+            (if (member "b" given-args)
+                '["HDMI-A-2 enable position 0 0"
+                  "eDP-1    enable position 0 1080"]
+                '["HDMI-A-2 enable position 0 0"])
+
             '["HDMI-A-1 enable"]
-            '["HDMI-A-2 enable transform 0"]
+
             '["eDP-1 enable"])

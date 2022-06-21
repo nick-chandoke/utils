@@ -43,17 +43,6 @@
 
 (define (flip f) (λ (x y) (f y x)))
 
-;; this works on a mix of alist & list, which is a more useful structure than strict lists or alists.
-;; as this is a mix of alists & lists, i'll call them "a/lists."
-(define (massoc k s [p equal?])
-  (let lp ([s s])
-    (if (null? s)
-        #f
-        (let ([c (car s)])
-          (if (or (and (pair? c) (p k (car c))) (p k c))
-              c
-              (lp (cdr s)))))))
-
 ;; take or null
 (define (</ n s)
   (define f #f)

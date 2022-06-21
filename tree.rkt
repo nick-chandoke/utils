@@ -107,7 +107,7 @@
 (define (pp-tree/string t) (pp-tree t identity))
 (define (build-tree ->kids r) (let go ([r r]) (cons r (map (λ (k) (go k)) (->kids r)))))
 (define (build-tree/map ->value ->kids r) (let go ([r r]) (cons (->value r) (map (λ (k) (go k)) (->kids r)))))
-(define (fold-tree f r) (let go ([r r]) (f (car r) (map go (cdr r)))))
+(define (fold-tree f r) (let go ([r r]) (f (car r) (map go (cdr r))))) ;; TODO: cf dfs fold
 (define (leaves r) (fold-tree (λ (r rs) (if (null? rs) (list r) (apply append rs))) r))
 (define (map-leaves f r) (fold-tree (λ (r as) (if (null? as) (list (f r)) (cons r as))) r))
 (define (bind-leaves k r) (fold-tree (λ (r as) (if (null? as) (k r) (cons r as))) r))

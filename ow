@@ -15,18 +15,6 @@
   ;; sometimes leave fzf open while an interactive child process runs (e.g. mplayer)
 ;; fails when file name contains single quotes. might also fail for other particular characters
 
-;; e.g. (P #f (λ (x) (P x port->string "tr h z")) "echo" "hi")
-;; if you want synchronous processes, set current input/output ports, and use system*.
-;; TODO: i don't use this function at all; i use its body explicitly in order to
-;; close the input port later. make that more elegant
-#;(define (P in f cmd . args)
-  (match (apply process*/ports #f in 'stdout (find-executable-path cmd) args)
-         [(list output input _pid _err ask)
-          (ask 'wait)
-          (begin0 (f output)
-                  (close-input-port output)
-                  (when input (close-output-port input)))]))
-
 ;; TODO: support synchronous process/piping. see
 ;; programming/racket/racket/collects/racket/system.rkt for definition of system*.
 

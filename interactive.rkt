@@ -1,5 +1,9 @@
 #lang racket/base
 
+;; there's no dir/base name, since racket can't reliably check whether files exist; you need to be
+;; in the same directory as the file whose existence you're checking, even if you want to check an
+;; absolute path! this alone is enough to make we want to switch to picolisp!
+
 (provide (all-defined-out))
 (require (for-syntax racket/base syntax/parse)
          (only-in racket/format ~a)
@@ -142,7 +146,3 @@
                           l))
                 '()
                 d)))
-
-(define (dir&basename p) (split-at-right (explode-path p) 1))
-(define (dirname p) (let-values ([(d _) (dir&basename p)]) d))
-(define (basename p) (let-values ([(_ bn) (dir&basename p)]) bn))
