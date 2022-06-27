@@ -17,13 +17,40 @@
 
 ;; this module is typed b/c arrays are much faster when typed
 (module reg typed/racket/base
-        (require math/matrix math/array (only-in racket/math sgn))
-        (provide (all-defined-out))
+        (require math/matrix math/array
+                 (only-in racket/math sgn) (only-in math/statistics mean)
+                 (only-in math/special-functions flgamma-inc))
+        (provide (except-out (all-defined-out) logit))
+        
+        (: logit (-> Real Real)) ; (-> Real Nonnegative-Real) ∉ exp's case->
+        (define (logit x) (/ (+ 1 (exp (- x)))))
 
-        (: adjoin1 (-> (Matrix Float) (Matrix Float)))
+        ;; θ should maximize likelihood.
+        ;; if deviance/log < ϵ then reject the null.
+        ;; the null is that the predictor(s) predicted no better than if we'd predicted the average y value.
+        ;; the maximized-likelihood null still has less predictive power than other models.
+        ;; TODO: how to determine whether _each_ predictor sensibly improved the prediction? this would enable
+        ;; discarding redundant or unpredictive predictors. i suppose one can calculate the confidence for all
+        ;; unique combinations of predictors.
+        (: deviance/log (-> (Matrix Real) (Matrix Real) (Matrix Real) Number))
+        (define (deviance/log x y θ)
+          (* 2 (let* ([γ  : Real (mean (in-array y))]
+                      [γc : Real (- 1 γ)])
+                 (- (for/sum : Number ([y (in-array y)] [p (in-array (matrix-map logit (matrix* (adjoin1 x) θ)))])
+                       (+ (* y (log p)) (* (- 1 y) (log (- 1 p)))))
+                    (* (array-size y) (+ (* γ (log γ)) (* γc (log γc))))))))
+
+        ;; the confidence with which we reject the null i.e. deviance percentile.
+        ;; this model fits better (has lower deviance) than <confidence/log>% of sets of data.
+        ;; df is the number of predictors.
+        (: confidence/log (-> Number Number Number))
+        (define (confidence/log d df) (flgamma-inc (/ df 2) (/ x 2) #t #t))
+
+        ;; [[x ...] ...] -> [[1 x ...] ...]
+        (: adjoin1 (-> (Matrix Real) (Matrix Real)))
         (define (adjoin1 A)
           (let* ([S (array-shape A)])
-            ((inst build-array Float) (vector (vector-ref S 0) (add1 (vector-ref S 1)))
+            ((inst build-array Real) (vector (vector-ref S 0) (add1 (vector-ref S 1)))
                                        (λ ([is : In-Indexes])
                                          (let ([is (cast is (Vectorof Integer))])
                                            (if (= 0 (vector-ref is 1))
@@ -35,38 +62,33 @@
         ;; solves by newton-raphson where
         ;; ℓ = Σ[i]yᵢ(xt*β)-log(1+exp(xt*β))
         ;; ∂ℓ/∂β = (xt)(y-p)
-        ;; ∂²ℓ/∂β² = x×(wx) where w = pᵢⱼ(1-pᵢⱼ) on the diagonal. x×(wx) = -(xt)wx ∵ x is a kind of skew symmetric matrix, apparently...?
+        ;; ∂²ℓ/∂β² = x×(wx) where w = pᵢⱼ(1-pᵢⱼ) on the diagonal. x×(wx) = -(xt)wx; x is apparently skew symmetric.
         ;; see https://en.wikipedia.org/wiki/Cross_product#Conversion_to_matrix_multiplication
-        (: logreg (->* [(Matrix Float) (Matrix Float)]
-                       [Nonnegative-Float]
-                       (Matrix Float)))
-        (define logreg
-          (let ([logit (λ ([x : Float]) : Float (/ (+ 1 (exp (- x)))))]
-                [C (λ ([x : Float]) : Float (- 1 x))])
-            (λ ([x : (Matrix Float)] [y : (Matrix Float)] [ϵ : Nonnegative-Float 0.00005])
-              (let* ([x : (Matrix Float) (adjoin1 x)]
-                     [xt : (Matrix Float) (matrix-transpose x)])
-                (let loop : (Matrix Float)
-                  ([β : (Matrix Float) (make-matrix (vector-ref (array-shape x) 1) 1 0.)])
-                  (let* ([p : (Matrix Float) (matrix-map logit (matrix* x β))]
-                         ;; let w's type be inferred. specifying In-Indexes will a bad time make.
-                         [w ((inst diagonal-matrix Float) ((inst matrix->list Float) ((inst matrix-map Float Float Float) * p (matrix-map C p))))]
-                         [δ (matrix-solve (matrix* xt w x) (matrix* xt (matrix- y p)))])
-                    (displayln δ)
-                    (if (< (abs (apply max (array->list δ))) ϵ)
-                        β
-                        (loop (matrix+ β δ)))))))))
+        (: logreg (->* [(Matrix Real) (Matrix Real)] [Positive-Real] (Matrix Real)))
+        (define (logreg x y [ϵ 0.00005])
+          (let* ([x : (Matrix Real) (adjoin1 x)]
+                 [xt : (Matrix Real) (matrix-transpose x)])
+            (let loop : (Matrix Real)
+              ([cnt : Natural 0] ; just in case we don't converge in 100 steps. should never happen, but ridiculous ϵ may enable it.
+               [β : (Matrix Real) (make-matrix (vector-ref (array-shape x) 1) 1 0.)])
+              (let* ([p : (Matrix Real) (matrix-map logit (matrix* x β))]
+                     ;; let w's type be inferred. specifying In-Indexes will a bad time make.
+                     [w ((inst diagonal-matrix Real) ((inst matrix->list Real) (array-map (λ ([x : Real]) (* x (- 1 x))) p)))]
+                     [δ (matrix-solve (matrix* xt w x) (matrix* xt (matrix- y p)))])
+                (if (or (< (abs (apply max (array->list δ))) ϵ) (and (= cnt 100)
+                                                                     (printf "logreg didn't converge with ϵ = ~a in 100 iterations.\n" ϵ)))
+                    β
+                    (loop (add1 cnt) (matrix+ β δ)))))))
 
         ;; TODO: reg+sse needs to accept args from polyreg+sse somhow.
 
-        #|
         ;; the polynomial function represented by a matrix
         ;; e.g. (let ([f (reg->fn (lagrange-polynomial '(1 2 3) '(2 5 10)))]) (f 4)) ; 17
-        (: reg->fn (-> (Matrix Float) (-> Float Float)))
+        (: reg->fn (-> (Matrix Real) (-> Real Real)))
         (define ((reg->fn m) x) (array-ref (matrix* (vandermonde-matrix (list x) (matrix-num-rows m)) m) #(0 0)))
 
         ;; uncurried version of reg->fn, for convenience
-        (: reg-fn (-> (Matrix Float) Float Float))
+        (: reg-fn (-> (Matrix Real) Real Real))
         (define (reg-fn m x) ((reg->fn m) x))
 
         ;; general function regression: given a set of (x,y) pairs, computes argmin[θ](Σ(y-f(x;θ))²)
@@ -74,13 +96,13 @@
         ;; this method would not work on θ₁sin(θ₂+x) since that's not linear in θ.
         ;; TODO: really, a complete consideration requires that i consider linear operators, e.g. the derivative.
         ;; apparently putting functions inside vectors quotes them...? weird. you need to specify fs as a list, not a vector.
-        (: reg+sse (-> (Vectorof Float) (Vectorof Float) (Listof (-> Float Float)) [#:ridge Float] [#:Xovr (Option (Matrix Float))] (Values (Matrix Float) Float)))
+        (: reg+sse (-> (Vectorof Real) (Vectorof Real) (Listof (-> Real Real)) [#:ridge Real] [#:Xovr (Option (Matrix Real))] (Values (Matrix Real) Real)))
         (define (reg+sse xs ys fs #:ridge [ridge 0.] #:Xovr [Xovr #f])
-          (let* ([X : (Matrix Float) (or Xovr (build-matrix (vector-length xs) (length fs) (λ ([i : Integer] [j : Integer]) ((list-ref fs j) (vector-ref xs i)))))]
-                 [y : (Matrix Float) (->col-matrix ys)]
-                 [XT : (Matrix Float) (matrix-transpose X)]
-                 [β-hat : (Matrix Float) (matrix* (matrix-inverse (matrix+ (matrix* XT X) (identity-matrix (matrix-num-rows XT) ridge))) XT y)]
-                 [e-hat : (Matrix Float) (matrix- y (matrix* X β-hat))])
+          (let* ([X : (Matrix Real) (or Xovr (build-matrix (vector-length xs) (length fs) (λ ([i : Integer] [j : Integer]) ((list-ref fs j) (vector-ref xs i)))))]
+                 [y : (Matrix Real) (->col-matrix ys)]
+                 [XT : (Matrix Real) (matrix-transpose X)]
+                 [β-hat : (Matrix Real) (matrix* (matrix-inverse (matrix+ (matrix* XT X) (identity-matrix (matrix-num-rows XT) ridge))) XT y)]
+                 [e-hat : (Matrix Real) (matrix- y (matrix* X β-hat))])
             (values β-hat (array-ref (matrix* (matrix-transpose e-hat) e-hat) #(0 0)))))
         
         ;; polynomial regression and sum of squared errors
@@ -89,17 +111,16 @@
            see <https://en.wikipedia.org/wiki/Tikhonov_regularization>.
            try different ridges to see which one minimizes sse for your particular data.
         |#
-        (: polyreg+sse (-> Positive-Integer (Vectorof Float) (Vectorof Float) [#:ridge Nonnegative-Float] (Values (Matrix Float) Float)))
+        (: polyreg+sse (-> Positive-Integer (Vectorof Real) (Vectorof Real) [#:ridge Nonnegative-Real] (Values (Matrix Real) Real)))
         (define (polyreg+sse deg xs ys #:ridge [ridge 0.]) (reg+sse xs ys _fs #:ridge ridge #:Xovr (vandermonde-matrix (vector->list xs) (add1 deg))))
         
-        (: polyreg (-> Positive-Integer (Vectorof Float) (Vectorof Float) [#:ridge Nonnegative-Float] (Matrix Float)))
+        (: polyreg (-> Positive-Integer (Vectorof Real) (Vectorof Real) [#:ridge Nonnegative-Real] (Matrix Real)))
         (define (polyreg deg xs ys #:ridge [ridge 0.]) (let-values ([(p _) (polyreg+sse deg xs ys #:ridge ridge)]) p))
         
         ;; smallest-degree polynomial that intersects all points
         ;; NOTE: works only for invertible matrices!
-        (: lagrange-polynomial (∀ (a) (-> (Listof Float) (Matrix Float) (Matrix Float))))
+        (: lagrange-polynomial (∀ (a) (-> (Listof Real) (Matrix Real) (Matrix Real))))
         (define (lagrange-polynomial xs ys) (matrix-solve (vandermonde-matrix xs (length xs)) ys))
-        |#
 
 )
 
