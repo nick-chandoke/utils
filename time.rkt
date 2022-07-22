@@ -106,7 +106,6 @@
 
 ;;; type conversion
 
-;; (: date->datetime (->* (DateProvider) (Integer Integer Integer Integer) DateTime))
 (define (date->datetime d [h 0] [m 0] [s 0] [ms 0])
   (datetime (->year d) (->month d) (->day d) h m s ms))
 

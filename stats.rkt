@@ -43,8 +43,8 @@
         ;; the confidence with which we reject the null i.e. deviance percentile.
         ;; this model fits better (has lower deviance) than <confidence/log>% of sets of data.
         ;; df is the number of predictors.
-        (: confidence/log (-> Number Number Number))
-        (define (confidence/log d df) (flgamma-inc (/ df 2) (/ x 2) #t #t))
+        (: confidence/log (-> Float Float Float))
+        (define (confidence/log d df) (flgamma-inc (/ df 2) (/ d 2) #t #t))
 
         ;; [[x ...] ...] -> [[1 x ...] ...]
         (: adjoin1 (-> (Matrix Real) (Matrix Real)))
@@ -80,8 +80,6 @@
                     β
                     (loop (add1 cnt) (matrix+ β δ)))))))
 
-        ;; TODO: reg+sse needs to accept args from polyreg+sse somhow.
-
         ;; the polynomial function represented by a matrix
         ;; e.g. (let ([f (reg->fn (lagrange-polynomial '(1 2 3) '(2 5 10)))]) (f 4)) ; 17
         (: reg->fn (-> (Matrix Real) (-> Real Real)))
@@ -112,10 +110,12 @@
            try different ridges to see which one minimizes sse for your particular data.
         |#
         (: polyreg+sse (-> Positive-Integer (Vectorof Real) (Vectorof Real) [#:ridge Nonnegative-Real] (Values (Matrix Real) Real)))
-        (define (polyreg+sse deg xs ys #:ridge [ridge 0.]) (reg+sse xs ys _fs #:ridge ridge #:Xovr (vandermonde-matrix (vector->list xs) (add1 deg))))
+        (define (polyreg+sse deg xs ys #:ridge [ridge 0.])
+          (reg+sse xs ys #f #:ridge ridge #:Xovr (vandermonde-matrix (vector->list xs) (add1 deg))))
         
         (: polyreg (-> Positive-Integer (Vectorof Real) (Vectorof Real) [#:ridge Nonnegative-Real] (Matrix Real)))
-        (define (polyreg deg xs ys #:ridge [ridge 0.]) (let-values ([(p _) (polyreg+sse deg xs ys #:ridge ridge)]) p))
+        (define (polyreg deg xs ys #:ridge [ridge 0.])
+          (let-values ([(p _) (polyreg+sse deg xs ys #:ridge ridge)]) p))
         
         ;; smallest-degree polynomial that intersects all points
         ;; NOTE: works only for invertible matrices!
@@ -192,13 +192,13 @@
 ;; NOTE: doesn't require tikhonov regularization to always
 ;; produce a solution!
 (define theil-sen
-  (case-lambda [(as . rst) (let*-values ([(->x ->y) (cond [(null? rst) (values car cdr)]
+  (case-lambda [(xs ys) (let ([m (median < (n-choose-2 (λ (x1 y1 x2 y2) (/ (- y2 y1) (- x2 x1))) xs ys))])
+                          (~> (+ (median < (map (λ (x y) (- y (* m x))) xs ys))) (* m)))]
+               [(as . rst) (let*-values ([(->x ->y) (cond [(null? rst) (values car cdr)]
                                                           [(null? (cdr rst)) (values (car rst) cdr)]
                                                           [else (values (car rst) (cadr rst))])]
                                          [(m) (median < (n-choose-2 (λ (a b) (/ ((on - ->y) b a) ((on - ->x) b a))) as))])
-                                           (~> (+ (median < (map (λ (a) (- (->y a) (* m (->x a)))) as))) (* m)))]
-               [(xs ys) (let ([m (median < (n-choose-2 (λ (x1 y1 x2 y2) (/ (- y2 y1) (- x2 x1))) xs ys))])
-                          (~> (+ (median < (map (λ (x y) (- y (* m x))) xs ys))) (* m)))]))
+                                           (~> (+ (median < (map (λ (a) (- (->y a) (* m (->x a)))) as))) (* m)))]))
 
 (define ((lincomb θ fs) x) (foldl (λ (p f s) (+ s (* p (f x)))) 0 θ fs))
 

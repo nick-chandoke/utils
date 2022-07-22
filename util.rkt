@@ -14,12 +14,12 @@
          (only-in racket/bool symbol=?)
          (only-in racket/file make-temporary-file)
          (only-in racket/format ~a)
-         (only-in racket/function curry identity const)
+         (only-in racket/function curry identity const negate)
          (only-in racket/list make-list split-at splitf-at range shuffle dropf takef)
          (only-in racket/match match)
          (only-in racket/math exact-floor)
          (only-in racket/port copy-port port->string)
-         (only-in racket/sequence sequence->list sequence-ref sequence-tail empty-sequence sequence-append)
+         (only-in racket/sequence sequence-length sequence->list sequence-ref sequence-tail empty-sequence sequence-append)
          (only-in racket/set set-member?)
          (only-in racket/string string-split string-suffix? string-replace non-empty-string? string-prefix? string-trim string-join)
          (only-in racket/system process process/ports)
@@ -27,6 +27,32 @@
          (only-in srfi/13 string-fold)
          srfi/2
          syntax/parse/define)
+
+(define ∧ (case-lambda [(x) (andmap identity x)] [X (andmap identity X)]))
+(define ∨ (case-lambda [(x) (ormap identity x)] [X (ormap identity X)]))
+
+(define ∈ (case-lambda [(x a b) (and (>= x a) (<= x b))] [(x xs) (member x xs)]))
+
+;; convert an alist of functions into a function that selects & applies therefrom
+;; e.g. (let ([fs (alist->fn `((+1 . ,add1) (minus . ,-)))]) (/ (fs '+1 3) (fs 'minus 5 3)))
+(define (alist->fn m) (λ (f . args) (apply (cdr (assoc f m)) args)))
+
+;; combination of factorlang's cleave, spread, and napply.
+(define-syntax (A stx)
+  (syntax-parse stx
+    [(_ XS ...+ (~literal @) FS ...+)
+      #'(let* ([xs (list XS ...)]
+               [fs (list FS ...)]
+               [xs (if (and (null? (cdr xs))
+                            (sequence? (car xs))
+                            (not (exact-nonnegative-integer? (car xs)))) ; treat positive integers as data, not sequences
+                       (car xs)
+                       xs)])
+          (cond [(= 1 (sequence-length xs)) (let ([x (sequence-ref xs 0)]) (map (λ (f) (f x)) fs))] ;; cleave
+                [(null? (cdr fs)) (let ([f (car fs)]) (for/list ([x xs]) (f x)))] ;; napply
+                [else (for/list ([x xs] [f fs]) (f x))]))])) ;; spread
+
+(define ((L . F) x) (map (λ (f) (f x)) F))
 
 ;; to read from processes, use system*; see §system processes & ipc in racket notes
 ;; e.g. (P #f (λ (x) (P x port->string "tr h z")) "echo" "hi")
@@ -68,7 +94,11 @@
           [(null? (cdr args)) (raise-argument-error 'alist "even number of arguments" args0)]
           [else (let-values ([(a b) (safe-split-at args 2)]) (cons (apply cons a) (loop b)))])))
 
-(define (list-transpose xss) (apply map (lambda X (apply list X)) xss))
+(define (list-transpose xss) (apply map list xss))
+
+(define-syntax (this-src-file-path stx)
+  (syntax-case stx ()
+    [(s) #'(resolved-module-path-name (module-path-index-resolve (syntax-source-module #'s)))]))
 
 ;; TODO: use in-syntax to replace all ()'s.
 ;; compose functions from right to left e.g.
@@ -139,7 +169,7 @@
 (define-syntax-parse-rule (until vars cond a ...+ upd)
   (let loop vars (unless cond a ... (loop upd))))
 
-;; like `until`
+;; negated `until`
 (define-syntax-parse-rule (while vars cond a ...+ upd)
   (let loop vars (when cond a ... (loop upd))))
 
@@ -193,7 +223,7 @@ passing functions of those parameters to the parent constructor, e.g.
          #'(and (let ([s e]) (or s (begin (printf "fail: ~a~n" reason) #f))) ...)
          #'(and e ...))]))
 
-;; output's a little dirty; may print an unnecessary trailing newline. lines after first are indented by one space.
+;; may print an unnecessary trailing newline. lines after first are indented by one space.
 (define-macro (print-vars . args)
   `(printf ,(string-append
              (string-join

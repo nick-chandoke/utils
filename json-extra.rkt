@@ -39,7 +39,7 @@
    this is where mhash-ref is simply better.
 
    now suppose that my-json is randomly chosen to be either ["erina", "ribbon"]
-   or {"food":"carrot"}. then (get-prop-val my-json (list car) (list 'food))
+   or {"food":"carrot"}. then (get-prop-val my-json `(,car) '(food))
    would return either "erina" or "carrot".
 
    * if a list operation is tried to be applied to something that isn't a list, or a key is given where the corresponding object isn't a hash table, then get-prop-val returns 'fail
@@ -233,11 +233,11 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
     #:with defstruct (if (ormap identity (attribute contract)) #'struct/contract #'struct)
     #:with fields (if (ormap identity (attribute contract)) #'([field (~? contract any/c)] ...) #'(field ...))
     (let ([import-fn (cond [(not (attribute from-js)) (format-id #'name "jsexpr->~a" (syntax-e #'name))]
-                                [(syntax-e #'from-js) #'from-js]
-                                [else #f])]
+                           [(syntax-e #'from-js) #'from-js]
+                           [else #f])]
           [export-fn (cond [(not (attribute to-js)) (format-id #'name "~a->jsexpr" (syntax-e #'name))]
-                                [(syntax-e #'to-js) #'to-js]
-                                [else #f])])
+                           [(syntax-e #'to-js) #'to-js]
+                           [else #f])])
       (with-syntax* ([(k ...) (map (λ (k s) (or k (datum->syntax s #`(quote #,(syntax-local-eval s)))))
                                     (attribute key)
                                     (syntax-e #'((string->symbol (field->key (symbol->string (quote field)))) ...)))]
@@ -297,11 +297,82 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
                                               #'())])
         #'(begin (defstruct name fields other ... kw-constructor ...) import-expr ... export-expr ...)))]))
 
+;; alist may lack items listen in spec; no error is raised about missing attributes.
+;; attributes present in the alist but not in the spec are ignored.
+;; both of these behaviors are natural in ->js' definition, and are neither un/intentional.
+(define ((->js spec spec-id field->key) alist)
+  (for/fold ([r (hash)]) ([s spec])
+    (match (match s [(list '+ attrs ids) `(,attrs . ,ids)]
+                    [(cons id attrs)     `(,attrs . (,id))]
+                    [else s])
+           [(cons attrs ids) (for/fold ([r r]) ([id ids])
+                               (let ([k (string->symbol (field->key (symbol->string id)))]
+                                     [v (massoc id alist)])
+                                    (let R ([attrs attrs])
+                                      (if (null? attrs)
+                                          (hash-set r k (real->jsexpr v)) ; default export
+                                          (case (car attrs)
+                                                [(export) (if (null? (cdr attrs))
+                                                              (error (format "missing required export fn arg for ~a in spec ~a" id spec-id))
+                                                              (hash-set r k ((cadr attrs) v)))]
+                                                ;; e.i.t. takes an optional arg, so it must come last
+                                                [(export-if-truthy) (if v
+                                                                        (hash-set r k (if (null? (cdr attrs)) v ((cadr attrs) v)))
+                                                                        r)]
+                                                ;; generally we'd case number to drop on (car attrs)
+                                                [else (R (drop attrs 2))])))))]
+           [id (hash-set r (string->symbol (field->key (symbol->string id))) (massoc id alist))])))
+
+;; spec's order is preserved.
+(define ((js-> spec spec-id field->key) j)
+  (let ([err (λ (id k)
+               (λ _ (error (format "failed to parse field ~a of spec ~a from the following JSON because it's missing the '~s key: ~a"
+                                   id spec-id k (jsexpr->string j)))))])
+    (for/foldr ([r '()]) ([s spec])
+      (match (match s [(list '+ attrs ids) `(,attrs . ,ids)]
+                      [(cons id attrs)     `(,attrs . (,id))]
+                      [else s])
+             [(cons attrs ids) (for/fold ([r r]) ([id ids])
+                                 (let ([k (string->symbol (field->key (symbol->string id)))])
+                                      (let R ([attrs attrs])
+                                        (if (null? attrs)
+                                            `((,id . ,(hash-ref j k (err id k))) . ,r) ; default import
+                                            (if (null? (cdr attrs))
+                                                (R '()) ; (error (format "missing required arg to spec attribute ~a for ~a in spec ~a" (car attrs) id spec-id))
+                                                (case (car attrs)
+                                                    [(const) `((,id . ,(cadr attrs)) . ,r)]
+                                                    [(or) `((,id . ,(hash-ref j k (cadr attrs))) . ,r)]
+                                                    [(unsafe-parse) `((,id . ,((cadr attrs) (hash-ref j k (err id k)))) . ,r)]
+                                                    [(parse-maybe) (let ([x (hash-ref j k 'not-found)])
+                                                                     `((,id . ,(if (equal? x 'not-found)
+                                                                                   #f
+                                                                                   ((cadr attrs) x)))
+                                                                       . ,r))]
+                                                    [(parse) `((,id . ,((cadr attrs) (hash-ref j k 'not-found))) . ,r)]
+                                                    [else (R (drop attrs 2))]))))))]
+             [id `((,id . ,(let ([k (string->symbol (field->key (symbol->string id)))]) (hash-ref j k (err id k)))) . ,r)]))))
+
+(define-syntax (de/aljs stx)
+  (syntax-parse stx
+    [(_ spec-id import-id export-id (~optional field->key) spec-obj) ; for each of import & export: if #t then use defult name; if #f then don't define. if identifier then bind to that.
+     ;; defines a fn as #f if not implemented b/c who cares if it does instead of not defining anything?
+     (let ([import-id (case (syntax-e #'import-id)
+                       [(#t) (format-id #'spec-id "jsexpr->~a" (syntax-e #'spec-id))]
+                       [(#f) #f]
+                       [else #'import-id])]
+           [export-id (case (syntax-e #'export-id)
+                       [(#t) (format-id #'spec-id "~a->jsexpr" (syntax-e #'spec-id))]
+                       [(#f) #f]
+                       [else #'export-id])])
+     #`(begin (define spec-id spec-obj)
+              #,@(if import-id #`((define #,import-id (js-> spec-id (quote #,(syntax-e #'spec-id)) (~? field->key (λ (x) x))))) '())
+              #,@(if export-id #`((define #,export-id (->js spec-id (quote #,(syntax-e #'spec-id)) (~? field->key (λ (x) x))))) '())))]))
+
 ;; TODO: rename. it's now a misnomer; it really ensures that reals are jsexprs.
 ;; needed for e.g. (write-json `(1 2 ,(/ 5 3))), which fails b/c 5/3 isn't a legal json value.
 ;; however, (write-json (map real->jsexpr `(1 2 ,(/ 5 3)))) succeeds by converting 5/3 to a float,
 ;; leaving 1 & 2 as they are, since exact integers are valid json already.
-(define (real->jsexpr r) (if (exact? r) (exact->inexact r) r))
+(define (real->jsexpr r) (if (and (number? r) (exact? r)) (exact->inexact r) r))
 
 ;; e.g. (for ([j (in-jslist some-input-port)]) (f j))
 ;; closes the input port when done reading the sequence

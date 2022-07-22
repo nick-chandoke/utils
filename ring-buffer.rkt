@@ -3,7 +3,7 @@
 ;;; ring buffer emulation. uses a vector rather than a circular linked list.
 
 (provide (except-out (all-defined-out) ring-buffer))
-(require (only-in racket/vector vector-split-at vector-append)
+(require (only-in racket/vector vector-split-at vector-append vector-copy)
          (only-in racket/function curry)
          (only-in racket/match define/match)
          (only-in racket/sequence sequence-append))
@@ -18,6 +18,9 @@
 ;; NOTE: you should not use the ring-buffer constructor for normal ring buffer usage! use make-ring-buffer or ring-buffer-from-elems
 ;; instead.
 (struct ring-buffer (index data) #:mutable) ; mutable for index, not data
+
+;; instantly clear buffer without actually modifying the ring buffer's contents in memory.
+(define (ring-buffer-reset! rb) (set-ring-buffer-index! rb 0))
 
 #| if you'll push no more than <size> elements to a buffer b, then b is effectively a queue.
    then (ring-buffer-data b) on [0, index] is equal to (ring-buffer->vector b) except that
@@ -66,16 +69,17 @@
 ;(: vector->ring-buffer (∀ (a) (-> (Mutable-Vectorof a) (RingBuffer a))))
 (define (vector->ring-buffer v) (ring-buffer (vector-length v) v))
 
-;; the most recently pushed element. if nothing has been pushed, then returns
-;; the provided default value.
-;(: ring-buffer-default-or-last (∀ (a) (-> (RingBuffer a) a)))
-(define/match (ring-buffer-default-or-last rb)
-  [((ring-buffer i b)) (vector-ref b (modulo (sub1 i) (vector-length b)))])
-
-;; the most recently pushed element. if nothing has been pushed, then returns #f.
-;(: ring-buffer-last (∀ (a) (-> (RingBuffer a) (Option a))))
-(define/match (ring-buffer-last rb)
-  [((ring-buffer i b)) (and (positive? i) (vector-ref b (modulo (sub1 i) (vector-length b))))])
+;; select the nth most recently-pushed element or (a copy of) the k most recent
+;; elements starting n indices back. as a special case k=+inf.0 returns
+;; all elements up to and including the nth.
+;; returns #f if index is out of bounds.
+(define (rb@ rb [n 0] [k #f])
+  (let* ([b (ring-buffer-data rb)]
+         [l (- (modulo (sub1 (ring-buffer-index rb)) (vector-length b)) n)]
+         [l2 (and k (if (eq? +inf.0 k) 0 (add1 (- l k))))])
+    (if l2
+        (and (>= l2 0) (vector-copy b l2 (add1 l)))
+        (and (>= l 0) (vector-ref b l)))))
 
 ;(: list->ring-buffer (∀ (a) (-> (Listof a) (RingBuffer a))))
 (define (list->ring-buffer xs) (apply ring-buffer-from-elems xs))
