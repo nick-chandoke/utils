@@ -13,8 +13,11 @@
          srfi/2
          (only-in racket/set set-member?)
          (only-in racket/format ~a)
+         (only-in racket/list drop)
          (only-in "util.rkt" pretty-table-str)
+         (only-in "jul.rkt" massoc)
          (only-in racket/list flatten)
+         (only-in racket/match match)
          (only-in racket/function identity)
          racket/contract ;; why need to import even if not invoking json-struct with contracts in this module?
          (for-syntax racket/base
@@ -164,7 +167,6 @@ map =
           [(and (= l 2) def?) (list (car xs))] ; one given argument plus the default; use the given argument
           [else (raise-syntax-error #f (format "only one of ~a allowed" opts) src)])))
 
-;; TODO: like Validation applicative functor, collect all failed lookup keys into one error message. nested keys will be separated by dots just like in js, e.g. prop.subprop.key
 #| simultaneously define a struct and functions to parse or export it from or to a json object.
 syntax: (json-struct struct-name (field ...) struct-opts) where
   field = [id opt-contract key import export]
@@ -189,7 +191,6 @@ syntax: (json-struct struct-name (field ...) struct-opts) where
 
 NOTE: result of json export function only satisfies hash?; it does not necessarily satisfy jsexpr?!
 
-* if no export rule is given for a field, then real->jsexpr is implicitly applied
 * `struct/contract` will be used instead of `struct` if any field has a contract. beware that struct/contract accepts a subset of struct's kwargs, and that fileds missing contracts will assume any/c
 
 TIP: you may want to parse an object of unknown shape. suppose it could be one of two shapes, S1 & S2. then we can try to parse it as an S1 and, failing that, try parsing it as an S2, raising an exception if that fails:
@@ -297,42 +298,52 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
                                               #'())])
         #'(begin (defstruct name fields other ... kw-constructor ...) import-expr ... export-expr ...)))]))
 
-;; alist may lack items listen in spec; no error is raised about missing attributes.
+;; ->js & js->: substantives with attributes or attributes distributed over substantives.
+;; interperable as substantives each with a stack of fns & params at least one of whose args
+;; is the substantive.
+
+;; alist may lack items listed in spec; no error is raised about missing attributes.
 ;; attributes present in the alist but not in the spec are ignored.
 ;; both of these behaviors are natural in ->js' definition, and are neither un/intentional.
-(define ((->js spec spec-id field->key) alist)
+(define ((->js spec spec-id [field->key identity]) alist)
   (for/fold ([r (hash)]) ([s spec])
+           ;; normalize shape
     (match (match s [(list '+ attrs ids) `(,attrs . ,ids)]
                     [(cons id attrs)     `(,attrs . (,id))]
                     [else s])
            [(cons attrs ids) (for/fold ([r r]) ([id ids])
-                               (let ([k (string->symbol (field->key (symbol->string id)))]
-                                     [v (massoc id alist)])
-                                    (let R ([attrs attrs])
-                                      (if (null? attrs)
-                                          (hash-set r k (real->jsexpr v)) ; default export
-                                          (case (car attrs)
-                                                [(export) (if (null? (cdr attrs))
-                                                              (error (format "missing required export fn arg for ~a in spec ~a" id spec-id))
-                                                              (hash-set r k ((cadr attrs) v)))]
-                                                ;; e.i.t. takes an optional arg, so it must come last
-                                                [(export-if-truthy) (if v
-                                                                        (hash-set r k (if (null? (cdr attrs)) v ((cadr attrs) v)))
-                                                                        r)]
-                                                ;; generally we'd case number to drop on (car attrs)
-                                                [else (R (drop attrs 2))])))))]
+                               (let ([k (string->symbol (field->key (symbol->string id)))])
+                                 (let R ([attrs attrs])
+                                   (if (null? attrs)
+                                       (hash-set r k (real->jsexpr (massoc id alist))) ; default export
+                                       (case (car attrs)
+                                         [(sub) (let ([v (massoc id alist)])
+                                                  (if (pair? v)
+                                                      (hash-set r k ((->js (cadr attrs) id field->key) v))
+                                                      (error (format "~a should be a spec; given ~s" id v))))]
+                                         [(export) (if (pair? (cdr attrs))
+                                                       (hash-set r k ((cadr attrs) (massoc id alist)))
+                                                       (error (format "missing required export fn arg for ~a in spec ~a" id spec-id)))]
+                                         ;; e.i.t. takes an optional arg, so it must come last
+                                         [(export-if-truthy) (let ([v (massoc id alist #f)])
+                                                               (if v
+                                                                   (hash-set r k (if (null? (cdr attrs)) v ((cadr attrs) v)))
+                                                                   r))]
+                                         ;; generally we'd case number to drop on (car attrs)
+                                         [else (R (drop attrs 2))])))))]
            [id (hash-set r (string->symbol (field->key (symbol->string id))) (massoc id alist))])))
 
 ;; spec's order is preserved.
-(define ((js-> spec spec-id field->key) j)
+(define ((js-> spec spec-id [field->key identity]) j)
   (let ([err (λ (id k)
                (λ _ (error (format "failed to parse field ~a of spec ~a from the following JSON because it's missing the '~s key: ~a"
                                    id spec-id k (jsexpr->string j)))))])
     (for/foldr ([r '()]) ([s spec])
+             ;; normalize shape
       (match (match s [(list '+ attrs ids) `(,attrs . ,ids)]
                       [(cons id attrs)     `(,attrs . (,id))]
                       [else s])
-             [(cons attrs ids) (for/fold ([r r]) ([id ids])
+             [(cons attrs ids) (for/foldr ([r r]) ([id ids])
                                  (let ([k (string->symbol (field->key (symbol->string id)))])
                                       (let R ([attrs attrs])
                                         (if (null? attrs)
@@ -340,18 +351,33 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
                                             (if (null? (cdr attrs))
                                                 (R '()) ; (error (format "missing required arg to spec attribute ~a for ~a in spec ~a" (car attrs) id spec-id))
                                                 (case (car attrs)
-                                                    [(const) `((,id . ,(cadr attrs)) . ,r)]
-                                                    [(or) `((,id . ,(hash-ref j k (cadr attrs))) . ,r)]
-                                                    [(unsafe-parse) `((,id . ,((cadr attrs) (hash-ref j k (err id k)))) . ,r)]
-                                                    [(parse-maybe) (let ([x (hash-ref j k 'not-found)])
-                                                                     `((,id . ,(if (equal? x 'not-found)
-                                                                                   #f
-                                                                                   ((cadr attrs) x)))
-                                                                       . ,r))]
-                                                    [(parse) `((,id . ,((cadr attrs) (hash-ref j k 'not-found))) . ,r)]
-                                                    [else (R (drop attrs 2))]))))))]
+                                                  [(const) `((,id . ,(cadr attrs)) . ,r)]
+                                                  [(or) `((,id . ,(hash-ref j k (cadr attrs))) . ,r)]
+                                                  [(sub) (let ([v (hash-ref j k (err id k))])
+                                                           (if (hash? v)
+                                                               `((,id . ,((js-> (cadr attrs) id field->key) v)) . ,r)
+                                                               (error (format "~a should be a spec; given ~a" id v))))]
+                                                  [(unsafe-parse) `((,id . ,((cadr attrs) (hash-ref j k (err id k)))) . ,r)]
+                                                  [(parse-maybe) (let ([x (hash-ref j k 'not-found)])
+                                                                   `((,id . ,(if (equal? x 'not-found)
+                                                                                 #f
+                                                                                 ((cadr attrs) x)))
+                                                                     . ,r))]
+                                                  [(parse) `((,id . ,((cadr attrs) (hash-ref j k 'not-found))) . ,r)]
+                                                  [else (R (drop attrs 2))]))))))]
              [id `((,id . ,(let ([k (string->symbol (field->key (symbol->string id)))]) (hash-ref j k (err id k)))) . ,r)]))))
 
+;; TODO: like Validation applicative functor, collect all failed lookup keys into one error message. nested keys will be separated by dots just like in js, e.g. prop.subprop.key
+;; rather than syntax & macros, de/aljs defines in terms of a/lists.
+;; a/lists here are data structures supporting traversals i.e. they
+;; encode actionable ideas. #stopsyntax. another example is traversing
+;; an alist instead of using the `cond` macro.
+;; -----------------------------------------------------------------------
+;; de/aljs is itself a macro because, as an arbitrary constraint of
+;; racket, dynamic defines can be done only through macros.
+;; the "code" way to define dynamically is to store in a global hashtable;
+;; however, racket, by its choice to scope within each module, does not
+;; support global vars.
 (define-syntax (de/aljs stx)
   (syntax-parse stx
     [(_ spec-id import-id export-id (~optional field->key) spec-obj) ; for each of import & export: if #t then use defult name; if #f then don't define. if identifier then bind to that.
@@ -365,8 +391,8 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
                        [(#f) #f]
                        [else #'export-id])])
      #`(begin (define spec-id spec-obj)
-              #,@(if import-id #`((define #,import-id (js-> spec-id (quote #,(syntax-e #'spec-id)) (~? field->key (λ (x) x))))) '())
-              #,@(if export-id #`((define #,export-id (->js spec-id (quote #,(syntax-e #'spec-id)) (~? field->key (λ (x) x))))) '())))]))
+              #,@(if import-id #`((define #,import-id (js-> spec-id (quote #,(syntax-e #'spec-id)) (~? field->key)))) '())
+              #,@(if export-id #`((define #,export-id (->js spec-id (quote #,(syntax-e #'spec-id)) (~? field->key)))) '())))]))
 
 ;; TODO: rename. it's now a misnomer; it really ensures that reals are jsexprs.
 ;; needed for e.g. (write-json `(1 2 ,(/ 5 3))), which fails b/c 5/3 isn't a legal json value.
