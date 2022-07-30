@@ -15,22 +15,11 @@
          (only-in racket/format ~a)
          (only-in racket/list drop)
          (only-in "util.rkt" pretty-table-str)
-         (only-in "jul.rkt" massoc)
+         (only-in "jul.rkt" massoc extract)
          (only-in racket/list flatten)
          (only-in racket/match match)
          (only-in racket/function identity)
-         racket/contract ;; why need to import even if not invoking json-struct with contracts in this module?
-         (for-syntax racket/base
-                     syntax/parse
-                     (only-in syntax/stx stx-null?)
-                     (only-in racket/syntax with-syntax* syntax-local-eval format-id)
-                     (only-in racket/function negate)
-                     srfi/2
-                     (only-in racket/bool symbol=?)
-                     (only-in racket/list splitf-at)
-                     (only-in racket/match match)
-                     (only-in racket/list take filter-map)
-                     (only-in racket/function identity)))
+         (for-syntax racket/base syntax/parse (only-in racket/syntax format-id)))
 
 #| use mhash-ref instead of get-prop-val unless you need multiple accessor chains:
    trying each chain in parameter order until one matches (or 'fail of none matches).
@@ -141,166 +130,14 @@ map =
                          (attribute lookup-pat))
      #'(let ([m ht/list]) (collect v ...))]))
 
-;;; json-struct
-
-#| reduce multiple optional syntaxes into one. accepts (listof (or/c syntax? false?)) or syntax thereof
-   where the list should be null or singleton (or 1 or 2 if #:default is provided.)
-   NOTE: in the following templates, the ellipses are literal; <...> and the underscores aren't.
-   useful as #:with ((~optional _)) (opt+ #'((~? var1) (~? var2) <...>) src opt <...>)
-   or        #:with (((~optional _)) ...) (datum->syntax #'((~? _src-xs _dummy) ...)
-                                                         (map (λ (s x) (opt+ s x opt <...>))
-                                                              (syntax-e #'(((~? var1) (~? var2) <...>) ...))
-                                                              (attribute _src-xs)))
-   etc, depending on ellipsis depth, or if you put a syntax at the end of the list (serving as a default value,) then
-   #:with ((_) ...) (datum->syntax _ (map (λ (s f) (opt+ s f opt <...> #:default? #t))       ; apply opt+ to each list of syntax options
-                                          (syntax-e #'(((~? var1) (~? var2) <...> DEF) ...)) ; list of lists of syntax options
-                                          (attribute _src-xs)))
-   we need to use such odd syntax to deal with #:with (~optional _) _ being illegal.
-|#
-(define-for-syntax (opt+ stx src #:default? [def? #f] . opts)
-  (let* ([xs (filter syntax? (if (syntax? stx) (syntax-e stx) stx))]
-         [l (length xs)])
-    (cond [(= l 0) (if def?
-                       (raise-argument-error 'opt+ "non-empty syntax list (b/c #:default? #t was given)" stx)
-                       #'())]
-          [(= l 1) (list (car xs))]
-          [(and (= l 2) def?) (list (car xs))] ; one given argument plus the default; use the given argument
-          [else (raise-syntax-error #f (format "only one of ~a allowed" opts) src)])))
-
-#| simultaneously define a struct and functions to parse or export it from or to a json object.
-syntax: (json-struct struct-name (field ...) struct-opts) where
-  field = [id opt-contract key import export]
-  opt-contract =
-               | contract?
-  key = ; if omitted, assume field name as key when exporting or importing to or from json objects
-      | #:as symbol? ; key as appears in json
-  import = ; if omitted, then the value is read as-is from json object at appropriate key
-         | #:parse (-> (or/c 'not-found jsexpr?) any/c)
-         | #:parse-maybe (-> jsexpr? any/c) ; if not found, then #f; otherwise apply parsing function. almost always used with #:export-if-truthy.
-         | #:unsafe-parse (-> jsexpr? any/c) ; throws "missing key" error if key not present; else parses.
-         | #:or any/c ; if lookup fails, use this value.
-         | #:const any/c ; doesn't even bother with lookup; just assume this value
-  export = ; if omitted, then value is exported as-is from the structure at appropriate key
-         | #:export (or/c #f (-> any/c (or/c 'no-export jsexpr?))) ; if #f, don't export; otherwise use export fn.
-         | #:export-if-truthy (-> any/c jsexpr?) ; if truthy, apply function then export. if fn is omitted, assume identity
-  struct-opts =
-              | #:field->key (-> string? string?) ; function to derive json object key from struct field name
-              | #:to-js (or/c #f id)   ; manually specify struct to jsexpr function name. if #f is given, then an export function won't be defined
-              | #:from-js (or/c #f id) ; like #:export but for jsexpr-to-struct function.
-              | other ; passed verbatim to `struct`
-
-NOTE: result of json export function only satisfies hash?; it does not necessarily satisfy jsexpr?!
-
-* `struct/contract` will be used instead of `struct` if any field has a contract. beware that struct/contract accepts a subset of struct's kwargs, and that fileds missing contracts will assume any/c
-
-TIP: you may want to parse an object of unknown shape. suppose it could be one of two shapes, S1 & S2. then we can try to parse it as an S1 and, failing that, try parsing it as an S2, raising an exception if that fails:
-
-(require (only-in racket/exn exn->string))
-(define (jsexpr->s1-or-s2 j)
-  (with-handlers ([(λ (e) (and (exn:fail:contract? e)
-                               (string-contains? (exn->string e) "hash-ref")))
-                   (const (jsexpr->s2 j))])
-    (jsexpr->s1 j)))
-
-it's a bit hacky, but it's dependable. TODO: there should be an option so that, if parse fails, then #f is returned instead of a struct.
-|#
-(define-syntax (json-struct stx)
-  (syntax-parse stx
-   [(_ name:id
-     ((~or* field:id
-            (~and field-tuple
-                  ;; field options are depth 1
-                  [field:id (~optional (~and (~not contract:keyword) contract))
-                   (~alt (~optional (~seq #:as key))
-                         ;; import clauses (select 0~1)
-                         (~optional (~seq #:parse parse))
-                         (~optional (~seq #:parse-maybe parse-maybe))
-                         (~optional (~seq #:unsafe-parse unsafe-parse))
-                         (~optional (~seq #:or otherwise))
-                         (~optional (~seq #:const const))
-                         ;; export clauses (select 0~1)
-                         (~optional (~seq #:export export))
-                         (~seq #:export-if-truthy (~optional export-if-truthy))) ; optional and takes an optional argument
-                   ...])) ...)
-              ;; struct opts have depth 0
-              (~alt (~optional (~seq #:field->key field->key) #:defaults ([field->key #'identity]))
-                    (~optional (~seq #:to-js to-js))
-                    (~optional (~seq #:from-js from-js))
-                    ;; #:constructor-name needed in parsing fn
-                    (~optional (~seq #:constructor-name constructor))
-                    ;; passthrough to struct
-                    other) ...)
-    #:with (kw-constructor ...) (if (attribute constructor) #'(#:constructor-name constructor) #'())
-    #:with defstruct (if (ormap identity (attribute contract)) #'struct/contract #'struct)
-    #:with fields (if (ormap identity (attribute contract)) #'([field (~? contract any/c)] ...) #'(field ...))
-    (let ([import-fn (cond [(not (attribute from-js)) (format-id #'name "jsexpr->~a" (syntax-e #'name))]
-                           [(syntax-e #'from-js) #'from-js]
-                           [else #f])]
-          [export-fn (cond [(not (attribute to-js)) (format-id #'name "~a->jsexpr" (syntax-e #'name))]
-                           [(syntax-e #'to-js) #'to-js]
-                           [else #f])])
-      (with-syntax* ([(k ...) (map (λ (k s) (or k (datum->syntax s #`(quote #,(syntax-local-eval s)))))
-                                    (attribute key)
-                                    (syntax-e #'((string->symbol (field->key (symbol->string (quote field)))) ...)))]
-                     ;; import & exprort exprs' optionalities are as singleton vs empty lists rather than ~optional b/c wanna continue with-syntax*
-                     ;; rather than start new syntax-parse.
-                     [(import-expr ...)
-                      (if import-fn
-                          (with-syntax ([(((it hash-else)) ...)
-                                         (datum->syntax #'((~? field-tuple #'dummy) ...)
-                                                        (map (λ (parse unsafe-parse parse-maybe otherwise f k loc)
-                                                               (let ([uhr #`(lookup-err (quote #,f) #,k)])
-                                                                 (opt+ (list (and parse #`(#,parse 'not-found))
-                                                                             (and unsafe-parse #`(#,unsafe-parse #,uhr))
-                                                                             (and parse-maybe #`((λ (x) (and x (#,parse-maybe x))) #f))
-                                                                             (and otherwise #`(identity (λ () #,otherwise)))
-                                                                             #`(identity #,uhr))
-                                                                       loc
-                                                                       '#:parse '#:parse-maybe '#:unsafe-parse '#:or '#:const #:default? #t)))
-                                                             (attribute parse)
-                                                             (attribute unsafe-parse)
-                                                             (attribute parse-maybe)
-                                                             (attribute otherwise)
-                                                             (attribute field)
-                                                             (syntax-e #'(k ...))
-                                                             (attribute field-tuple)))])
-                            #`((define (#,import-fn j)
-                                 (let ([lookup-err (λ (f K) (error (quote #,import-fn)
-                                                                (format "failed to parse field ~a of struct ~a from the following JSON because it's missing the '~s key: ~a"
-                                                                        f (quote name) K (jsexpr->string j))))])
-                                   ((~? constructor name) (~? const (it (hash-ref j k hash-else))) ...)))))
-                          #'())]
-                      [(export-expr ...) (if export-fn
-                                           ;; (equal? _ 'no-export) must be done at runtime, since 'no-export is gotten only after
-                                           ;; applying export transform.
-                                           ;; however, we know to omit from export if #:export #f
-                                            (with-syntax* ([((v) ...)
-                                                            (datum->syntax #'((~? field-tuple #'dummy) ...)
-                                                                           (map (λ (eit e field-accessor loc)
-                                                                                  ;; nullary eit exports even if #f
-                                                                                  (opt+ (list (and eit
-                                                                                                   (not (null? eit))
-                                                                                                   #`(let ([v (#,field-accessor o)])
-                                                                                                       (if v
-                                                                                                           (#,(if (car eit) (car eit) #'identity) v)
-                                                                                                           'no-export)))
-                                                                                              (and e (if (syntax-e e) #`(#,e (#,field-accessor o)) (syntax 'no-export)))
-                                                                                              #`(real->jsexpr (#,field-accessor o)))
-                                                                                        loc
-                                                                                        '#:export '#:export-if-truthy #:default? #t))
-                                                                                (attribute export-if-truthy)
-                                                                                (attribute export)
-                                                                                (map (λ (f) (and (format-id f "~a-~a" #'name f))) (attribute field))
-                                                                                (attribute field-tuple)))])
-                                              #`((define (#,export-fn o) (for/hash ([ek (list k ...)] [ev (list v ...)]
-                                                                                   #:when (not (equal? 'no-export ev)))
-                                                                                  (values ek ev)))))
-                                              #'())])
-        #'(begin (defstruct name fields other ... kw-constructor ...) import-expr ... export-expr ...)))]))
-
 ;; ->js & js->: substantives with attributes or attributes distributed over substantives.
 ;; interperable as substantives each with a stack of fns & params at least one of whose args
 ;; is the substantive.
+
+;; though you can (+ props vals), all in vals must be symbols; none can be property lists;
+;; ((+ (const #f) (x (y as z)))) is illegal. for that you must do
+;; (@,(map (: '(const #f)) (x (y as z))))
+(define ((: b) a) ((if (pair? a) append cons) a b))
 
 ;; alist may lack items listed in spec; no error is raised about missing attributes.
 ;; attributes present in the alist but not in the spec are ignored.
@@ -312,8 +149,11 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
                     [(cons id attrs)     `(,attrs . (,id))]
                     [else s])
            [(cons attrs ids) (for/fold ([r r]) ([id ids])
-                               (let ([k (string->symbol (field->key (symbol->string id)))])
-                                 (let R ([attrs attrs])
+                               (let* ([as (extract 'as attrs)]
+                                      [k (if (null? (car as))
+                                             (string->symbol (field->key (symbol->string id)))
+                                             (caar as))])
+                                 (let R ([attrs (cdr as)])
                                    (if (null? attrs)
                                        (hash-set r k (real->jsexpr (massoc id alist))) ; default export
                                        (case (car attrs)
@@ -344,7 +184,10 @@ it's a bit hacky, but it's dependable. TODO: there should be an option so that, 
                       [(cons id attrs)     `(,attrs . (,id))]
                       [else s])
              [(cons attrs ids) (for/foldr ([r r]) ([id ids])
-                                 (let ([k (string->symbol (field->key (symbol->string id)))])
+                                 (let* ([as (extract 'as attrs)]
+                                        [k (if (null? (car as))
+                                               (string->symbol (field->key (symbol->string id)))
+                                               (caar as))])
                                       (let R ([attrs attrs])
                                         (if (null? attrs)
                                             `((,id . ,(hash-ref j k (err id k))) . ,r) ; default import

@@ -1,9 +1,13 @@
-#!/bin/sh
-if test $# -eq 0; then
-  echo "usage: sway-bg OUTPUT IMAGE_PATH"
-  exit 0
+#/bin/sh
+# TODO: why the fuck isn't this invoked from mcomix when requested?
+# sway-bg.rkt is in PATH, so no need to find its path
+# intended to be run from a pic viewer or otherwise in
+# the background (e.g. via nohup)
+if test "$1" = stacked; then
+  sway-bg.rkt "$@" | while read -d $'\n' var; do
+                       eval "$var" # start swaybg procs
+                     done
+else
+  sway-bg.rkt "$@" # kill any running procs for selected output
+  nohup swaybg -o "$1" -i "$2" -m fill &>/dev/null &
 fi
-p="$(ps -eo '%p %c %a' | awk '$2=="swaybg"&&$5=="'"$1"'"{print($1)}')"
-if test -n "$p"; then kill "$p"; fi
-# to match properly, -o must be the first option.
-exec swaybg -o "$1" -i "$2" -m fill

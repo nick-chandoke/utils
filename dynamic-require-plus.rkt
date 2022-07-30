@@ -1,4 +1,5 @@
 #lang racket/base
+;; NOTE: the module that requires this module must, if it uses #lang racket/base, (require (for-syntax racket/base))!
 (require (for-syntax racket/base))
 (provide dynamic-require+)
 (define-syntax (dynamic-require+ stx)

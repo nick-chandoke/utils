@@ -1,7 +1,7 @@
 #!/usr/bin/env racket
 #lang racket/base
 
-(require "powerline" (rename-in racket/system (system* SS)))
+(require "powerline" (rename-in racket/system (system* SS)) racket/cmdline)
 
 ;; triggers an alert each time battery becomes low enough.
 ;; suspends (TODO: hibernate) if battery becomes even lower.
@@ -15,7 +15,12 @@
 (define warn-thres 15)
 (define sleep-thres 10)
 
-(let repeat ()
+(command-line
+ #:once-each [("-w" "--warn")  x "warning threshold" (set! warn-thres x)]
+             [("-s" "--sleep") x "sleeping threshold" (set! sleep-thres x)]
+ #:ps "thresholds represent events triggered when battery percent falls to the given number"
+ #:args _
+ (let repeat ()
   (void (let ([bamt (get-charge%)])
           (cond [(>= bamt warn-thres) (set! alerted? #f)]
                 [(and (not alerted?) (< bamt warn-thres))
@@ -26,4 +31,4 @@
                  (set! alerted? #t)
                  (system* "systemctl" "suspend")])))
   (sleep 60)
-  (repeat))
+  (repeat)))

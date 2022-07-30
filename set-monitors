@@ -1,14 +1,16 @@
 #!/usr/bin/env racket
 #lang racket/base
 
-;; map available inputs to used inputs (choose how to use available inputs.)
-;; alternative to kanshi b/c it wasn't working for me. *shrug*
-;; doesn't automatically run on output (dis)connect, but w/e just keybind it
-;; in sway config.
+#| map available inputs to used inputs (choose how to use available inputs.)
+   alternative to kanshi b/c it wasn't working for me. *shrug*
+   doesn't automatically run on output (dis)connect, but w/e just keybind it
+   in sway config.
 
-;; TODO: doesn't disable when i run after disconnecting external displays
-;; b/c swaymsg -t get_outputs doesn't tell about prior-enabled-but-currently-disconnected
-;; displays. not sure if disabling disconnected displays is necessary, anyway, though.
+   doesn't disable after disconnecting external displays, b/c there's no need; sway
+   will put workspaces on whatever displays are available.
+   also it's impossible to do that fully automatically, b/c swaymsg -t get_outputs
+   doesn't tell about prior-enabled-but-currently-disconnected displays.
+|#
 
 (require json
          racket/system

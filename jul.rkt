@@ -1,6 +1,6 @@
 #lang racket/base
 
-(require (only-in racket/function curry))
+(require (only-in racket/function curry) (only-in racket/list split-at))
 (provide (all-defined-out))
 
 ;; "just use lists." this library implements that document's ideas, plus those of tacitlisp, and best paradigms,
@@ -35,6 +35,8 @@
 ;; as this is a mix of alists & lists, i'll call them "a/lists."
 ;; massoc with a/lists is a common. more generally, though, you'd loop over a list [stack], taking n elements where
 ;; n is related to the top of the stack.
+;; massoc works for flat alists, i.e. those of the form (k1 v1 k2 v2 ...), too:
+;; (massoc 'a '(a 5 b 6)) => 5.
 (define (massoc k/p S [err (λ (k s) (error (if (procedure? k)
                                                (format "massoc: no match for given predicate on ~s" k s)
                                                (format "massoc: key ~a missing from ~s" k s))))])
@@ -44,7 +46,7 @@
           (let* ([c (car s)]
                  [d (if (pair? c)
                         (and (k (car c)) (list (if (procedure? k/p) c (cdr c))))
-                        (and (k c) (list c)))]) ; k is sensible here only if it's a procedure
+                        (and (k c) `(,s)))]) ; k is sensible here only if it's a procedure
             (if (pair? d)
                 (car d)
                 (lp (cdr s))))
@@ -67,9 +69,43 @@
                        [x (if (procedure? f) (f x) (massoc f x))])
                   (and x (R x (cdr accs))))])))
 
+#| returns (a . b) where (car b) is the first
+   element that satisfies the given predicate/value.
+   like massoc, if k/p is a procedure then its first match
+   is returned in b; else it's not.
+   (split-on even? '(1 3 2 6)) => ((1 3) 2 6)
+   (split-on 'a '(a b c d e)) => (() 5 b 6)
+   (split-on 'x '(a b c d e)) => ((a b c d e))
+   null cdr => not found.
+   null car => match on car of input list.
+|#
+(define (split-on k/p s)
+  (let* ([k (if (procedure? k/p) k/p (curry equal? k/p))]
+         [r '()]
+         [past (let lp ([s s])
+                 (if (pair? s)
+                     (if (k (car s))
+                         (begin (set! r (if (procedure? k/p) s (cdr s)))
+                                '())
+                         `(,(car s) . ,(lp (cdr s))))
+                     '()))])
+    `(,past . ,r)))
+
+;; lookup key in flat alist; return n following vals or, if key is a predicate,
+;; n vals including first matching predicate.
+;; (extract 'x '(a 1 b 2 x 3 4 y 6) 2) => ((3 4) (a 1 b 2 y 6))
+;; (extract 'y '(a 1 b 2 x 3 4 y 6)) => ((6) (a 1 b 2 x 3 4))
+;; (extract 'z '(a 1 b 2 x 3 4 y 6)) => (() (a 1 b 2 x 3 4 y 6))
+(define (extract k/p s [n 1])
+  (let ([a (split-on k/p s)])
+     (if (null? (cdr a)) ; key not in list
+         `(() . ,(car a))
+         (let-values ([(vs rst) (split-at (cdr a) n)])
+           `(,vs . ,(append (car a) rst))))))
+
 (define transpose (curry apply map list))
 
-;; structures
+;;; structures
 
 #| e.g.
 (pointwise + '((9  1) (2  6  7) 3)

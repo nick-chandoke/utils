@@ -50,23 +50,17 @@
      (printf "~a " z))
    (ring-buffer->list rb) ; '(100 100 100 100 100 100)
 |#
-;(: in-queue (∀ (a) (-> (RingBuffer a) (Sequenceof a))))
 (define (in-queue rb) (in-interval (ring-buffer-data rb) vector-ref 0 (ring-buffer-index rb)))
 
-;(: ring-buffer-full? (∀ (a) (-> (RingBuffer a) Boolean)))
 (define (ring-buffer-full? rb) (>= (ring-buffer-index rb) (vector-length (ring-buffer-data rb))))
 
-;(: make-ring-buffer (∀ (a) (-> Positive-Integer a (RingBuffer a))))
 (define (make-ring-buffer size [init-val 0]) (ring-buffer 0 (make-vector size init-val)))
 
-;(: ring-buffer-from-elems (∀ (a) (-> a * (RingBuffer a))))
 (define (ring-buffer-from-elems . xs)
   (let* ([v (apply vector xs)]
          [size (vector-length v)])
     (ring-buffer size v)))
 
-;; allows null ring buffer
-;(: vector->ring-buffer (∀ (a) (-> (Mutable-Vectorof a) (RingBuffer a))))
 (define (vector->ring-buffer v) (ring-buffer (vector-length v) v))
 
 ;; select the nth most recently-pushed element or (a copy of) the k most recent
@@ -81,10 +75,8 @@
         (and (>= l2 0) (vector-copy b l2 (add1 l)))
         (and (>= l 0) (vector-ref b l)))))
 
-;(: list->ring-buffer (∀ (a) (-> (Listof a) (RingBuffer a))))
 (define (list->ring-buffer xs) (apply ring-buffer-from-elems xs))
 
-;(: ring-buffer-push! (∀ (a) (-> (RingBuffer a) a * Void)))
 (define (ring-buffer-push! rb . es)
   (let ([i0 (ring-buffer-index rb)]
         [rbs (vector-length (ring-buffer-data rb))])
@@ -95,20 +87,17 @@
                  (loop (add1 k) (cdr rst)))))))
 
 ;; a bit faster than ring-buffer->vector
-;(: in-ring-buffer (∀ (a) (-> (RingBuffer a) (Sequenceof a))))
 (define/match (in-ring-buffer buf)
   [((ring-buffer i b)) (let*-values ([(s) (vector-length b)]
                                      [(p z) (vector-split-at b (modulo i s))])
                          (if (< i s) (in-vector p) (in-sequences (in-vector z) (in-vector p))))])
 
 ;; a bit faster than ring-buffer->list
-;(: ring-buffer->vector (∀ (a) (-> (RingBuffer a) (Mutable-Vectorof a))))
 (define/match (ring-buffer->vector buf)
   [((ring-buffer i b)) (let*-values ([(s) (vector-length b)]
                                      [(p z) (vector-split-at b (modulo i s))])
                          (if (< i s) p (vector-append z p)))])
 
-;(: ring-buffer->list (∀ (a) (-> (RingBuffer a) (Listof a))))
 (define/match (ring-buffer->list buf)
   [((ring-buffer i b)) (let*-values ([(s) (vector-length b)]
                                      [(p z) (vector-split-at b (modulo i s))])
