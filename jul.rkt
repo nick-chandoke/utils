@@ -1,7 +1,13 @@
 #lang racket/base
 
-(require (only-in racket/function curry) (only-in racket/list split-at))
-(provide (all-defined-out))
+;; NEXT: build parser on masssoc, nested, and split-on for parser-based programming
+;; also things returning non-lists or lists (e.g. massoc) should maybe just return
+;; lists. instead of list-ref generalized to it or cdr, nested, e.g. (list-ref n 'cdr s) to get cdr of nth element,
+;; all fns should return a list, which means nothing by null, something by car, or list by itself. this is extra
+;; symmetry, which should only be beneficial.
+
+(require (only-in racket/function curry) (only-in racket/list split-at make-list))
+(provide (except-out (all-defined-out) app atom pointwise))
 
 ;; "just use lists." this library implements that document's ideas, plus those of tacitlisp, and best paradigms,
 ;; namely, in summary, the paradigm: programs are structures (relations/pairs) that're (dis)integrated until they're
@@ -10,14 +16,6 @@
 
 ;; idk maybe pil is the only decent choice, like racket might be doomed by its inability to mutate items in lists.
 
-;; (atom 3) => 3
-;; (atom '(3)) => 3
-;; (atom '(3 . 5)) => #f
-(define (atom x) (if (pair? x) (if (null? (cdr x)) (car x) #f) x))
-
-;; apply that works on both proper & improper lists
-(define (app f ss) (map (λ (s) (if (and (pair? s) (null? (cdr s))) (car s) s)) ss))
-
 ;; simple map definition. i thought that i'd needed it, but not,
 ;; so here it remains.
 #;(define (map f . ss)
@@ -25,6 +23,19 @@
     (if (pair? (car ss))
         `(,(apply f (map car ss)) . ,(R (map cdr ss)))
         '())))
+
+;; over a k-ary list, rather than map an f of arity n → 1, f is arity n → m, and map-many
+;; returns an m×k list matrix.
+;; (map-many (λ (x y z) `(,(* x z) ,(+ x y))) '(1 2 3) '(10 20 30) '(1 0 1))
+;; => '((1 0 3) (11 22 33))
+(define (map-many f . ss)
+  (if (pair? (car ss))
+      (let* ([num-rets (length (apply f (map car ss)))])
+        (let R ([ss ss])
+          (if (pair? (car ss))
+              (map cons (apply f (map car ss)) (R (map cdr ss)))
+              (make-list num-rets '()))))
+      '()))
 
 ;; returns first list element matching a predicate or tail of first pair whose car matches a predicate.
 ;; this works on general lists e.g. (massoc even? '(1 3 (4 5 6) (a . b))) => (4 5 6). using a predicate
@@ -107,6 +118,14 @@
 
 ;;; structures
 
+;; (atom 3) => 3
+;; (atom '(3)) => 3
+;; (atom '(3 . 5)) => #f
+(define (atom x) (if (pair? x) (if (null? (cdr x)) (car x) #f) x))
+
+;; apply that works on both proper & improper lists
+(define (app f ss) (map (λ (s) (if (and (pair? s) (null? (cdr s))) (car s) s)) ss))
+
 #| e.g.
 (pointwise + '((9  1) (2  6  7) 3)
              '((3  2) (-2 6  5) 1))
@@ -116,10 +135,11 @@
              '((3  2) (-2 6  5) 1)
            #:comb +)
 --> 43 (the sum of the flattened resultant row)
+
+if #:comb  is unprovided, does deep map? maybe only for improper lists?
 |#
 (define (pointwise f s #:comb [comb cons] . ss)
   (let R ([ss `(,s . ,ss)])
     (if (atom (car ss))
         (app f ss)
         (comb (R (map car ss)) (R (map cdr ss))))))
-

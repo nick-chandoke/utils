@@ -137,7 +137,9 @@
             (->hours m) (->minutes m) (->seconds m) (->nanoseconds m)))
 
 ;; current date in a given timezone
-;; (: today/tz (-> TZ Date))
 (define (today/tz tz)
   (let ([m (adjust-timezone (now/moment) tz)])
     (date (->year m) (->month m) (->day m))))
+
+;; current moment in a given timezone
+(define (now/moment/tz tz) (adjust-timezone (now/moment) tz))

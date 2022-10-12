@@ -1,7 +1,7 @@
 #!/usr/bin/env racket
 #lang racket/base
 
-(require "powerline" (rename-in racket/system (system* SS)) racket/cmdline)
+(require "powerline" (rename-in racket/system (system* SS) (system system)) racket/cmdline)
 
 ;; triggers an alert each time battery becomes low enough.
 ;; suspends (TODO: hibernate) if battery becomes even lower.
@@ -29,6 +29,9 @@
                  (set! alerted? #t)]
                 [(and alerted? (< bamt sleep-thres) (not (plugged-in?)))
                  (set! alerted? #t)
+                 ;; system may fail to sleep if bluetooth service is running but radio is off. probably
+                 ;; about staying open for connections with prior-connected devices)
+                 (system "sudo rfkill bluetooth unblock")
                  (system* "systemctl" "suspend")])))
   (sleep 60)
   (repeat)))

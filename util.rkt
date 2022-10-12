@@ -31,6 +31,7 @@
 (define ∧ (case-lambda [(x) (andmap identity x)] [X (andmap identity X)]))
 (define ∨ (case-lambda [(x) (ormap identity x)] [X (ormap identity X)]))
 
+;; x∈y dually means "the x in y, if any" and "is x in y"
 (define ∈ (case-lambda [(x a b) (and (>= x a) (<= x b))] [(x xs) (member x xs)]))
 
 ;; convert an alist of functions into a function that selects & applies therefrom
@@ -54,7 +55,16 @@
 
 (define ((L . F) x) (map (λ (f) (f x)) F))
 
-;; to read from processes, use system*; see §system processes & ipc in racket notes
+(define (n-rand-subset-w/o-replace n s)
+  (let R ([n n]
+          [s s])
+    (if (= n 0)
+        '()
+        (let-values ([(a b) (split-at s (random n))])
+          (if (null? b)
+              `(,(car a) . ,(R (sub1 n) (cdr a)))
+              `(,(car b) . ,(R (sub1 n) (append a (cdr b)))))))));; to read from processes, use system*; see §system processes & ipc in racket notes
+
 ;; e.g. (P #f (λ (x) (P x port->string "tr h z")) "echo" "hi")
 ;; if you want synchronous processes, set current input/output ports, and use system*.
 ;; TODO: i don't use this function at all; i use its body explicitly in order to

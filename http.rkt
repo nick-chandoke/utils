@@ -125,6 +125,7 @@ please use constr, which looks like const but expands to a lambda
                                                                                                             [else "th"])))
                                                (or (exn:fail:network? r) (exn:retry? r)))))
    (λ ()
+     ;; this `cond` can be reduced since i'm no longer using typed racket. session-request accepts polymorphic formals.
      (let* ([resp (cond [form
                          (when debug?
                            (print-request method path headers query
@@ -208,7 +209,7 @@ please use constr, which looks like const but expands to a lambda
              [else (error (format "session-request-with-handlers: unhandled HTTP ~a" status-code))])))))
 
 #;(: http-json-api (∀ (a) (-> Session (U Bytes String URL)
-                           (-> JSExpr a) ; better than http-json-api returning (U JSExpr a), which ideally would be (Either a JSExpr) if racket supported ADTs. if we'd had Either, we could use ArrowChoice operators or treat it as a bifunctor or monad. with a mere untagged union, it may be difficult to distinguish between a correct result or a failure result, especially if they're the same type! therefore we use this function, which is effectively fmap that can be defined only before an item is put into an Either. we're basically making fmap (or `right`) mandatory then passing to (***).
+                           (-> JSExpr a) ; [haskell knowledge required] better than http-json-api returning (U JSExpr a), which ideally would be (Either a JSExpr) if racket supported ADTs. if we'd had Either, we could use ArrowChoice operators or treat it as a bifunctor or monad. with a mere untagged union, it may be difficult to distinguish between a correct result or a failure result, especially if they're the same type! therefore we use this function, which is effectively fmap that can be defined only before an item is put into an Either. we're basically making fmap (or `right`) mandatory then passing to (***).
                             [#:close? Boolean]
                             [#:method HTTP-Method]
                             [#:headers Headers]
@@ -241,7 +242,7 @@ please use constr, which looks like const but expands to a lambda
                        #:debug? [debug? #f])
   (session-request-with-handlers
    sess path (λ (resp)
-               (let ([j (response-json resp)])
+               (let ([j (response-json resp)]) ; exception is raised if response is not json
                  (if (eof-object? j)
                      (or on-empty-resp (on-success (hash)))
                      (on-success j))))

@@ -2,6 +2,9 @@
 ;; NOTE: the module that requires this module must, if it uses #lang racket/base, (require (for-syntax racket/base))!
 (require (for-syntax racket/base))
 (provide dynamic-require+)
+
+;; can use only in module level or top level. this makes this module worthless.
+;; only eval and lazy-require are suitable solutions.
 (define-syntax (dynamic-require+ stx)
   (syntax-case stx ()
     [(_ modpath fn ...)

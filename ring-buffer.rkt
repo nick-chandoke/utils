@@ -8,15 +8,21 @@
          (only-in racket/match define/match)
          (only-in racket/sequence sequence-append))
 
-;; where interval is inclusive on both sides
-;(: in-interval (∀ (s a) (-> s (-> s Integer a) Integer Integer (Sequenceof a))))
-(define (in-interval s f a z) (make-do-sequence (λ () (values (curry f s) add1 a (curry > z) #f #f))))
+;; where interval is inclusive on both sides. s is just some state.
+;; notice that this is not specific to ring buffers.
+;(: on-interval (∀ (s a) (-> s (-> s Integer a) Integer Integer (Sequenceof a))))
+(define (on-interval s f a z) (make-do-sequence (λ () (values (curry f s) add1 a (curry > z) #f #f))))
+
+;; includes interval boundary e.g. (rb-elems-on-interval rb 0 3) will return 3 elems or throw an error
+;; on index out of bounds.
+(define (rb-elems-on-interval rb a z) (on-interval (ring-buffer-data rb) vector-ref a z))
+
+(define (rb-last-n-elems rb n) (let ([end (ring-buffer-index rb)]) (rb-elems-on-interval rb (- end n) end)))
 
 ;; holds most recent n pushed elements. most recently pushed items are at the (right) end;
 ;; items on the left side "fall off" as new elements are added.
 ;; size remains constant. index increases on each push.
-;; NOTE: you should not use the ring-buffer constructor for normal ring buffer usage! use make-ring-buffer or ring-buffer-from-elems
-;; instead.
+;; NOTE: you should not use the ring-buffer constructor for normal ring buffer usage! use make-ring-buffer or ring-buffer-from-elems instead.
 (struct ring-buffer (index data) #:mutable) ; mutable for index, not data
 
 ;; instantly clear buffer without actually modifying the ring buffer's contents in memory.
@@ -50,7 +56,7 @@
      (printf "~a " z))
    (ring-buffer->list rb) ; '(100 100 100 100 100 100)
 |#
-(define (in-queue rb) (in-interval (ring-buffer-data rb) vector-ref 0 (ring-buffer-index rb)))
+(define (in-queue rb) (rb-elems-on-interval rb 0 (ring-buffer-index rb)))
 
 (define (ring-buffer-full? rb) (>= (ring-buffer-index rb) (vector-length (ring-buffer-data rb))))
 
