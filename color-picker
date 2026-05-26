@@ -1,8 +1,11 @@
 #!/bin/sh
-while true; do
-    x="$(slurp -p -b '#00000000')"
-    if test $? -ne 0; then
-        break
-    fi
-    grim -g "$x" -t ppm - | convert - -format '%[pixel:p{0,0}]' txt:- | tail -n 1 | cut -d ' ' -f 4 | pastel color
-done
+if test "$1" == -l; then
+  while true; do
+    x="$(slurp -p -b '#00000000')" # returns "$x,$y 1x1"
+    if test $? -ne 0; then break; fi
+    grim -g "$x" -t ppm - | magick - -format '%[pixel:p{0,0}]' txt:- | tail -n 1 | cut -d ' ' -f 4
+  done
+else
+    x="$(slurp -p -b '#00000000')" # returns "$x,$y 1x1"
+    test $? -eq 0 && grim -g "$x" -t ppm - | magick - -format '%[pixel:p{0,0}]' txt:- | tail -n 1 | cut -d ' ' -f 4
+fi

@@ -1,7 +1,0 @@
-#!/usr/bin/env racket
-#lang racket/base
-(require (only-in "env.rkt" stdin-or-arg1))
-(let ([s (or (stdin-or-arg1)
-             (raise-user-error "you must provide a hex number as stdin or arg1. note: posix shells use # as a comment beginner; either quote appropriately or omit the #"))])
-  (displayln (or (string->number (if (char=? #\# (string-ref s 0)) (substring s 1) s) 16)
-                 "<invalid input>")))

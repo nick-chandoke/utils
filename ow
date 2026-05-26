@@ -27,12 +27,12 @@
   #:ps "\nopen file selected by fzf with a given program.\n\nif you don't supply a directory, then the current directory's descendants are lazily loaded; if you specify a directory with --recurse, then its descendants are loaded strictly.)"
   #:args (prog . opt-dir)
   (let ([dir (if (null? opt-dir) #f (car opt-dir))])
-    (when dir
-      (unless (directory-exists? dir)
-      (fprintf (current-error-port) "directory ~a doesn't exist.~n" dir)
-      (when (string-prefix? dir "-")
-        (fprintf (current-error-port) "you probably meant to supply ~a as an option before ~a.~n" dir prog))
-      (exit 1)))
+    (void
+     (and dir (not (directory-exists? dir))
+          (begin (fprintf (current-error-port) "directory ~a doesn't exist.~n" dir)
+                 (when (string-prefix? dir "-")
+                   (fprintf (current-error-port) "you probably meant to supply ~a as an option before ~a.~n" dir prog))
+                 (exit 1))))
     (let ([X (if (and (not dir) recurse?)
                  #f
                  (match (apply process*/ports #f (open-input-string "") 'stdout

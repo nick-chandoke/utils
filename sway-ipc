@@ -13,6 +13,11 @@
 sway does not close the socket after giving a response despite us closing the socket on our end. maybe this is the expected behavior of sockets. idk yet.
 |#
 
+#| factor:
+USING: env io io.encodings.binary io.sockets ;
+"SWAYSOCK" env at <local> binary [ B{ 0 0 0 0 1 0 0 0 } write flush ] _with-local-address ! not with-local-address. maybe with-client ? idk; w/e you do, test this only when you're ready to restart sway often, since any imperfect use of sway's sockets will crank it to 100% cpu usage until you kill it.
+|#
+
 ;; main helper
 (define (sway-ipc0 bs)
   (let-values ([(in out) (unix-socket-connect (getenv "SWAYSOCK"))])

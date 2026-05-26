@@ -3,7 +3,7 @@
                                   on-interval)
                      __lms))
 
-(require (only-in "ring-buffer.rkt" in-interval)
+(require (only-in "ring-buffer.rkt" on-interval)
          (for-syntax racket/base
                      (only-in racket/function curry)
                      (only-in racket/list last range drop)
@@ -639,7 +639,7 @@ loop example (effectively (for-each displayln (range 2 10))):
   (let ([ma (if (negative? a) (+ (vector-length v) a) a)] [mz (if (negative? z) (+ (vector-length v) z) z)])
     (if (> ma mz)
         (if py? empty-sequence (in-interval/reverse v vector-ref (sub1 mz) (sub1 ma)))
-        (in-interval v vector-ref ma mz))))
+        (on-interval v vector-ref ma mz))))
 
 ;; needs to be its own function because racket doesn't support monoids Monoid m n => (m,n), nor monoids Last & (+1)
 ;; (: len&last (∀ (a) (-> (Listof a) (Values Positive-Integer a))))

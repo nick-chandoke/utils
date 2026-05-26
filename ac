@@ -1,0 +1,32 @@
+#!/usr/bin/env k
+/ converts from kitty color theme description to output pastable into alacritty's config file
+
+fl:{a:x?y;:[^a;#x;a]}
+eqq:{x,"=","\"",y,"\""}
+merge:{[m;A;B;v]mask:&(~^m@B)[;0];A[mask]v'm@B@mask} / v[A;m@B], where A & B are pointwise-associated vectors. does not pad. if none of B is in !m then merge returns ()
+
+colors:("black" ;"blue"   ;"cyan"   ;"green"  ;"magenta";"red"   ;"white"  ;"yellow")
+normal:("color0";"color4" ;"color6" ;"color2" ;"color5" ;"color1";"color7" ;"color3")
+bright:("color8";"color12";"color14";"color10";"color13";"color9";"color15";"color11")
+
+:[path:`argv[2]
+  [h:<`s$path
+   (lines;ps):{(0,(fl[x;"# alacritty"]))_x}@0:h
+   >h
+   m:!/+({1<#x}')#'(" "\)'({(~"#"=*x)&1<#x}')#lines
+   `0:"[colors.bright]"
+   `0:colors eqq'm@bright
+   `0:"\n[colors.normal]"
+   `0:colors eqq'm@normal
+   `0:"\n[colors.primary]"
+   `0:{x eqq'm@x}("background";"foreground")
+   / OPTIONALS
+   :[sel:merge[m;("text";"background");("selection_foreground";"selection_background");eqq]
+     [`0:"\n[colors.selection]";`0:sel];]
+   :[cur:merge[m;("text";"cursor");("cursor_text_color";"cursor");eqq]
+     [`0:"\n[colors.cursor]";`0:cur];]
+   / PRINT ANY ALACRITTY-SPECIFIC POSTSCRIPT
+   `0:2_'1_ps
+  ]
+  `0:"invalid cs"]
+
