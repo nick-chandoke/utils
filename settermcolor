@@ -1,0 +1,22 @@
+#!/bin/sh
+# this must be its own executable program so that fzf can call it from cs
+p="$HOME/.termcolors/$1.toml"
+if ! test -e "$p"; then p="${p%.toml}"; fi
+if ! test -e "$p"; then echo no such file; exit 1; fi
+
+# set borders if specified in the file
+# TODO: borders is now interactive. come-up with a non-interactive command to load borders
+# 047 is the single quote character
+# awk '/^# borders/{system("borders" " \047" $3 "\047 \047" $4 "\047")}' "$p" &>/dev/null
+
+# set color scheme
+if test "${p%.toml}" != "$p"; then
+  alacritty msg config -w -1 "$(cat $p)"
+else
+  # case "$TERM" in
+  # xterm-kitty) kitty @ set-colors -a -c "$p" ;;
+
+  # now i'm just using alacritty. idk if i should keep the TERM=x256 biz
+  alacritty msg config -w -1 "$(ac "$p")" # ;;
+  # esac
+fi
